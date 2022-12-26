@@ -1,0 +1,16 @@
+[
+  {
+    "factory_addr": "0x68A384D826D3678f78BB9FB1533c7E9577dACc0E",
+    "factory_abi": "src/abis/default.json",
+    "swap_fee": 25,
+    "name": "stellaswap",
+    "router_address": "0x68A384D826D3678f78BB9FB1533c7E9577dACc0E"
+  },
+  {
+    "factory_addr": "0x68A384D826D3678f78BB9FB1533c7E9577dACc0E",
+    "factory_abi": "src/abis/default.json",
+    "swap_fee": 25,
+    "name": "not_stellaswap",
+    "router_address": "0x68A384D826D3678f78BB9FB1533c7E9577dACc0E"
+  }
+]

@@ -12,3 +12,6 @@ deadpool-sqlite = "0.5.0"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 futures = "0.3.25"
+petgraph = {version = "0.6.2", features =["stable_graph"] }
+anyhow = "1.0.68"
+pathfinding = "4.2.0"

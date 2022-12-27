@@ -1,16 +1,65 @@
 [
   {
+    "name": "StellaSwap",
     "factory_addr": "0x68A384D826D3678f78BB9FB1533c7E9577dACc0E",
-    "factory_abi": "src/abis/default.json",
+    "factory_abi": "abis/default.json",
     "swap_fee": 25,
-    "name": "stellaswap",
     "router_address": "0x68A384D826D3678f78BB9FB1533c7E9577dACc0E"
   },
   {
-    "factory_addr": "0x68A384D826D3678f78BB9FB1533c7E9577dACc0E",
-    "factory_abi": "src/abis/default.json",
+    "name": "BeamSwap",
+    "factory_addr": "0x985BcA32293A7A496300a48081947321177a86FD",
+    "factory_abi": "abis/default.json",
+    "swap_fee": 30,
+    "router_address": "0x96b244391D98B62D19aE89b1A4dCcf0fc56970C7"
+  },
+  {
+    "name": "SolarFlare",
+    "factory_addr": "0x19B85ae92947E0725d5265fFB3389e7E4F191FDa",
+    "factory_abi": "abis/default.json",
     "swap_fee": 25,
-    "name": "not_stellaswap",
-    "router_address": "0x68A384D826D3678f78BB9FB1533c7E9577dACc0E"
+    "router_address": "0xd3B02Ff30c218c7f7756BA14bcA075Bf7C2C951e"
+  },
+  {
+    "name": "ZenLink",
+    "factory_addr": "0x079710316b06BBB2c0FF4bEFb7D2DaC206c716A0",
+    "factory_abi": "abis/zenlink.json",
+    "swap_fee": 30,
+    "router_address": "0x96b244391D98B62D19aE89b1A4dCcf0fc56970C7"
+  },
+  {
+    "name": "PadSwap",
+    "factory_addr": "0x663a07a2648296f1A3C02EE86A126fE1407888E5",
+    "factory_abi": "abis/default.json",
+    "swap_fee": 20,
+    "router_address": "0x40F1fEF0Fe68Fd10ff904070ee00a7769EE7fe34"
+  },
+  {
+    "name": "Convergence",
+    "factory_addr": "0x9504d0D43189D208459e15c7f643aAC1ABE3735d",
+    "factory_abi": "abis/default.json",
+    "swap_fee": 30,
+    "router_address": "0x09350b691C36c9Dc2245E70A0da9a39e874A6F13"
+  },
+  {
+    "name": "Fraxswap",
+    "factory_addr": "0x5Ca135cB8527d76e932f34B5145575F9d8cbE08E",
+    "factory_abi": "abis/default.json",
+    "swap_fee": 30,
+    "router_address": "0xc2544A32872A91F4A553b404C6950e89De901fdb"
+  },
+  {
+    "name": "Energyfi",
+    "factory_addr": "0x7c7EaEa389d958BB37a3fd08706Ca884D53Dc1F3",
+    "factory_abi": "abis/default.json",
+    "swap_fee": 30,
+    "router_address": "0xb77EF0475910d1B25FB9e66E3021be63270071C5"
+  },
+  {
+    "name": "Alphadex",
+    "factory_addr": "0x8887A4d737e1cD22c092e12CDb51dd5154fdDc58",
+    "factory_abi": "abis/default.json",
+    "swap_fee": 30,
+    "router_address": "0xEE63F8E307519881E01861D3Df8da3d46586F524"
   }
 ]

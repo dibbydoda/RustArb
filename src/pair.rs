@@ -1,8 +1,11 @@
 use crate::protocols::{SwapPool, WSClient};
-use anyhow::{anyhow, bail, Result};
+use anyhow::Result;
 use ethers::prelude::Address;
 use ethers::types::U256;
+use std::fmt::Debug;
+use std::panic::panic_any;
 use std::str::FromStr;
+use thiserror::Error;
 
 #[derive(Debug)]
 pub struct Pair {
@@ -12,6 +15,20 @@ pub struct Pair {
     pub reserve0: u128,
     pub reserve1: u128,
     fee: u32,
+}
+
+#[derive(Error, Debug)]
+pub enum ArbitrageError {
+    #[error("No Liquidity")]
+    NoLiquidity,
+    #[error("Math Overflow")]
+    MathOverflow,
+    #[error("Math Underflow")]
+    MathUnderflow,
+    #[error("Divide by zero")]
+    DivideByZero,
+    #[error("Token not in pair")]
+    TokenNotInPair,
 }
 
 impl Pair {
@@ -34,59 +51,78 @@ impl Pair {
         (self.token0, self.token1)
     }
 
-    pub fn get_amount_out(&self, input: Address, amount_in: U256) -> Result<U256> {
+    pub fn get_amount_out(&self, input: Address, amount_in: U256) -> Result<U256, ArbitrageError> {
         let reserves = self.get_ordered_reserves(input)?;
+        if reserves.input == 0.into() || reserves.output == 0.into() {
+            return Err(ArbitrageError::NoLiquidity);
+        }
+
         let fee_base: u32 = 10000;
         let fee_ratio = fee_base
             .checked_sub(self.fee)
-            .ok_or_else(|| anyhow!("Math Underflow"))?;
+            .ok_or(ArbitrageError::MathUnderflow)?;
         let amount_in_with_fee = amount_in
             .checked_mul(fee_ratio.into())
-            .ok_or_else(|| anyhow!("Math Overflow"))?;
+            .ok_or(ArbitrageError::MathOverflow)?;
         let numerator = amount_in_with_fee
             .checked_mul(reserves.output)
-            .ok_or_else(|| anyhow!("Math Overflow"))?;
+            .ok_or(ArbitrageError::MathOverflow)?;
         let denom_multi = reserves
             .input
             .checked_mul(fee_base.into())
-            .ok_or_else(|| anyhow!("Math Overflow"))?;
+            .ok_or(ArbitrageError::MathOverflow)?;
         let denominator = amount_in_with_fee
             .checked_add(denom_multi)
-            .ok_or_else(|| anyhow!("Math Overflow"))?;
-        numerator
+            .ok_or(ArbitrageError::MathUnderflow)?;
+        let output = numerator
             .checked_div(denominator)
-            .ok_or_else(|| anyhow!("Divide by zero"))
+            .ok_or(ArbitrageError::DivideByZero)?;
+
+        Ok(output)
     }
 
-    pub fn get_amount_in(&self, input: Address, amount_out: U256) -> Result<U256> {
+    pub fn get_amount_in(&self, input: Address, amount_out: U256) -> Result<U256, ArbitrageError> {
         let reserves = self.get_ordered_reserves(input)?;
+        if reserves.input == 0.into() || reserves.output == 0.into() {
+            return Err(ArbitrageError::NoLiquidity);
+        }
         let fee_base: u32 = 10000;
         let fee_ratio = fee_base
             .checked_sub(self.fee)
-            .ok_or_else(|| anyhow!("Math Underflow1"))?;
+            .ok_or(ArbitrageError::MathUnderflow)?;
         let numerator = reserves
             .input
             .checked_mul(amount_out)
-            .ok_or_else(|| anyhow!("Math Overflow"))?
+            .ok_or(ArbitrageError::MathOverflow)?
             .checked_mul(fee_base.into())
-            .ok_or_else(|| anyhow!("Math Overflow"))?;
+            .ok_or(ArbitrageError::MathOverflow)?;
         let denom_sub = reserves.output.saturating_sub(amount_out);
         let denominator = denom_sub
             .checked_mul(fee_ratio.into())
-            .ok_or_else(|| anyhow!("Math Overflow"))?;
+            .ok_or(ArbitrageError::MathOverflow)?;
         let division = numerator
             .checked_div(denominator)
             .unwrap_or_else(|| U256::max_value());
         Ok(division.saturating_add(1.into()))
     }
 
-    fn get_ordered_reserves(&self, input: Address) -> Result<OrderedReserves> {
+    fn get_ordered_reserves(&self, input: Address) -> Result<OrderedReserves, ArbitrageError> {
         if input == self.token0 {
             Ok(OrderedReserves::new(self.reserve0, self.reserve1))
         } else if input == self.token1 {
             Ok(OrderedReserves::new(self.reserve1, self.reserve0))
         } else {
-            bail!("Input token not in pair");
+            Err(ArbitrageError::TokenNotInPair)
+        }
+    }
+
+    pub fn calculate_weight(&self, input: Address, amount_in: U256) -> U256 {
+        match self.get_amount_out(input, amount_in) {
+            Ok(weight) => weight,
+            Err(error) => match error {
+                ArbitrageError::NoLiquidity => U256::zero(),
+                _ => panic_any(error),
+            },
         }
     }
 }

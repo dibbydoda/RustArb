@@ -1,3 +1,5 @@
+#![warn(clippy::all, clippy::nursery, clippy::cargo)]
+
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -7,7 +9,7 @@ use deadpool_sqlite::{Config, Runtime};
 use ethers::prelude::Address;
 use petgraph::stable_graph::NodeIndex;
 
-use crate::graph::{create_graph, find_shortest};
+use crate::graph::{create_graph, find_shortest_path};
 use crate::protocols::{generate_protocols, get_all_reserves, update_all_pairs};
 
 mod graph;
@@ -30,27 +32,18 @@ async fn main() {
     let protocols = update_all_pairs(protocols, client.clone()).await.unwrap();
     let protocols = get_all_reserves(protocols).await.unwrap();
 
-    let mut allpairs = Vec::new();
-    for protocol in &protocols {
-        allpairs.extend(protocol.pairs.values());
-    }
-
     let target = Address::from_str(TRADED_TOKEN).unwrap();
-    let mut nodes: HashMap<Address, NodeIndex> = HashMap::new();
-    let graph = create_graph(allpairs, &mut nodes, target).unwrap();
-
-    let start = *nodes.get(&Address::zero()).unwrap();
-    let end = *nodes.get(&target).unwrap();
 
     let now = Instant::now();
-    let shortest = find_shortest(&graph, nodes, &target).unwrap();
+    let mut nodes: HashMap<Address, NodeIndex> = HashMap::new();
+    let graph = create_graph(&protocols, &mut nodes, target).unwrap();
+    let amt: u128 = 100_000_000_000_000_000_000;
+    let shortest = find_shortest_path(&graph, nodes, &target, amt.into()).unwrap();
+    let outputs = shortest.get_amounts_out(amt.into()).unwrap();
+
+    dbg!(&shortest);
+    dbg!(outputs);
     let elapsed = now.elapsed();
-
-    let bad_edge = graph.find_edge(start, end).unwrap();
-    let bad_pair = graph.edge_weight(bad_edge).unwrap();
-
-    dbg!(bad_edge);
-    dbg!(bad_pair);
 
     println!("Elapsed: {:.5?}", elapsed);
 }

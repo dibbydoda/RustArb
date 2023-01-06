@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::iter::zip;
 use std::sync::Arc;
 
-use anyhow::{anyhow, ensure, Error, Result};
+use anyhow::{anyhow, ensure, Result};
 use deadpool_sqlite::rusqlite::{params, params_from_iter};
 use deadpool_sqlite::Pool;
 use ethers::abi::{Abi, Token};
@@ -46,7 +47,9 @@ impl<'a> GetPairCall<'a> {
         multicall.clear_calls();
         let mut addresses = Vec::with_capacity(address_tokens.len());
         for token in address_tokens {
-            addresses.push(PairAddress(token.into_address().ok_or(Error::msg(""))?))
+            addresses.push(PairAddress(
+                token.into_address().ok_or_else(|| anyhow!("Token cannot convert into address"))?,
+            ))
         }
 
         Ok(addresses)
@@ -61,8 +64,8 @@ struct DbAddition {
 }
 
 impl DbAddition {
-    fn new(address: Address, token0: Address, token1: Address) -> Self {
-        DbAddition {
+    const fn new(address: Address, token0: Address, token1: Address) -> Self {
+        Self {
             address,
             token0,
             token1,
@@ -77,27 +80,39 @@ struct RawProtocol {
     swap_fee: u32,
     name: String,
     router_address: Address,
+    router_abi: String,
 }
 
 #[derive(Debug)]
 pub struct Protocol {
     factory: ethers::contract::Contract<WSClient>,
-    router_addresses: Address,
+    pub router: ethers::contract::Contract<WSClient>,
     swap_fee: u32,
     name: String,
     pub pairs: HashMap<Address, Pair>,
     pool: Arc<Pool>,
 }
 
+impl Hash for Protocol {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.factory.address().hash(state);
+    }
+}
+
 // Private Functions
 impl Protocol {
-    async fn new(raw: RawProtocol, client: WSClient, pool: Arc<Pool>) -> Result<Protocol> {
+    async fn new(raw: RawProtocol, client: WSClient, pool: Arc<Pool>) -> Result<Self> {
         let factory_abi: Abi =
             serde_json::from_str(tokio::fs::read_to_string(raw.factory_abi).await?.as_str())?;
-        let factory = ethers::contract::Contract::new(raw.factory_addr, factory_abi, client);
-        Ok(Protocol {
+        let router_abi: Abi =
+            serde_json::from_str(tokio::fs::read_to_string(raw.router_abi).await?.as_str())?;
+        let factory =
+            ethers::contract::Contract::new(raw.factory_addr, factory_abi, client.clone());
+        let router =
+            ethers::contract::Contract::new(raw.router_address, router_abi, client.clone());
+        Ok(Self {
             factory,
-            router_addresses: raw.router_address,
+            router,
             swap_fee: raw.swap_fee,
             name: raw.name,
             pairs: HashMap::new(),
@@ -170,8 +185,8 @@ impl Protocol {
         };
         let addresses = pair_call.get_pair_addresses(&mut multicall).await?;
         let pool_contracts: Vec<SwapPool<WSClient>> = addresses
-            .iter()
-            .map(|address| Protocol::generate_pool_contracts(address, client.clone()))
+            .into_iter()
+            .map(|address| address.generate_pool_contract(client.clone()))
             .collect();
 
         for pool in &pool_contracts {
@@ -244,7 +259,7 @@ impl Protocol {
         let partials = self.get_pair_addresses_from_db().await?;
         for partial in partials {
             let address = partial.address;
-            let contract = Protocol::generate_pool_contracts(&address, client.clone());
+            let contract = address.generate_pool_contract(client.clone());
             self.pairs.insert(
                 address.0,
                 Pair::new(contract, partial.token0, partial.token1, self.swap_fee),
@@ -252,19 +267,15 @@ impl Protocol {
         }
         Ok(())
     }
-
-    fn generate_pool_contracts(address: &PairAddress, client: WSClient) -> SwapPool<WSClient> {
-        SwapPool::new(address.0, client.into())
-    }
 }
 
 // Called by public functions
 impl Protocol {
     async fn update_pairs(
-        mut protocol: Protocol,
+        mut protocol: Self,
         client: WSClient,
         bad_tokens_file: &str,
-    ) -> Result<Protocol> {
+    ) -> Result<Self> {
         {
             let additions = protocol.get_new_pairs(client.clone()).await?;
             if let Some(pairs) = additions {
@@ -280,7 +291,7 @@ impl Protocol {
         Ok(protocol)
     }
 
-    async fn get_reserves(mut protocol: Protocol) -> Result<Protocol> {
+    async fn get_reserves(mut protocol: Self) -> Result<Self> {
         let pairs: Vec<&mut Pair> = protocol.pairs.values_mut().collect();
 
         let mut multicall: Multicall<WSClient> =
@@ -389,4 +400,12 @@ fn repeat_vars(count: usize) -> String {
     // Remove trailing comma
     s.pop();
     s
+}
+
+pub fn get_all_pairs(protocols: Vec<&Protocol>) -> Vec<&Pair> {
+    let mut allpairs = Vec::new();
+    for protocol in protocols {
+        allpairs.extend(protocol.pairs.values());
+    }
+    allpairs
 }

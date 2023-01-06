@@ -1,4 +1,4 @@
-use crate::protocols::{SwapPool, WSClient};
+use crate::v2protocol::{SwapPool, WSClient};
 use anyhow::Result;
 use ethers::prelude::Address;
 use ethers::types::U256;
@@ -17,6 +17,16 @@ pub struct Pair {
     fee: u32,
 }
 
+#[derive(serde::Deserialize)]
+pub struct JsonPair {
+    address: PairAddress,
+    token0: Address,
+    token1: Address,
+    reserve0: u128,
+    reserve1: u128,
+    fee: u32,
+}
+
 #[derive(Error, Debug)]
 pub enum ArbitrageError {
     #[error("No Liquidity")]
@@ -32,8 +42,13 @@ pub enum ArbitrageError {
 }
 
 impl Pair {
-    pub fn new(contract: SwapPool<WSClient>, token0: Address, token1: Address, fee: u32) -> Self {
-        Pair {
+    pub const fn new(
+        contract: SwapPool<WSClient>,
+        token0: Address,
+        token1: Address,
+        fee: u32,
+    ) -> Self {
+        Self {
             contract,
             token0,
             token1,
@@ -43,11 +58,23 @@ impl Pair {
         }
     }
 
+    pub fn from_jsonpair(json: JsonPair, client: WSClient) -> Self {
+        let contract = json.address.generate_pool_contract(client);
+        Self {
+            contract,
+            token0: json.token0,
+            token1: json.token1,
+            reserve0: json.reserve0,
+            reserve1: json.reserve1,
+            fee: json.fee,
+        }
+    }
+
     pub fn contains(self, token: &Address) -> bool {
         *token == self.token0 || *token == self.token1
     }
 
-    pub fn get_tokens(&self) -> (Address, Address) {
+    pub const fn get_tokens(&self) -> (Address, Address) {
         (self.token0, self.token1)
     }
 
@@ -102,7 +129,7 @@ impl Pair {
             .ok_or(ArbitrageError::MathOverflow)?;
         let division = numerator
             .checked_div(denominator)
-            .unwrap_or_else(|| U256::max_value());
+            .unwrap_or_else(U256::max_value);
         Ok(division.saturating_add(1.into()))
     }
 
@@ -127,7 +154,14 @@ impl Pair {
     }
 }
 
+#[derive(serde::Deserialize, Copy, Clone)]
 pub struct PairAddress(pub Address);
+
+impl PairAddress {
+    pub fn generate_pool_contract(self, client: WSClient) -> SwapPool<WSClient> {
+        SwapPool::new(self.0, client.into())
+    }
+}
 
 pub struct PartialPair {
     pub address: PairAddress,
@@ -140,7 +174,7 @@ impl PartialPair {
         let address = PairAddress(Address::from_str(address.as_str())?);
         let token0 = Address::from_str(token0.as_str())?;
         let token1 = Address::from_str(token1.as_str())?;
-        Ok(PartialPair {
+        Ok(Self {
             address,
             token0,
             token1,
@@ -155,9 +189,18 @@ struct OrderedReserves {
 
 impl OrderedReserves {
     fn new(input: u128, output: u128) -> Self {
-        OrderedReserves {
+        Self {
             input: input.into(),
             output: output.into(),
         }
     }
+}
+
+pub async fn generate_custom_pairs(pair_file: &str, client: WSClient) -> Result<Vec<Pair>> {
+    let custom_pairs: Vec<JsonPair> =
+        serde_json::from_str(tokio::fs::read_to_string(pair_file).await?.as_str())?;
+    Ok(custom_pairs
+        .into_iter()
+        .map(|json| Pair::from_jsonpair(json, client.clone()))
+        .collect())
 }

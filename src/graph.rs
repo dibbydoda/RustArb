@@ -1,11 +1,9 @@
-use ordered_float::NotNan;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::iter::zip;
 
 use crate::pair::Pair;
-use crate::protocols::Protocol;
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{anyhow, Result};
 use ethers::prelude::Address;
 use ethers::types::U256;
 use petgraph::adj::DefaultIx;
@@ -28,10 +26,10 @@ pub struct SearchPath {
 }
 
 impl SearchPath {
-    fn new(weight: U256) -> Self {
+    const fn new(weight: U256) -> Self {
         let token_order = Vec::new();
         let pair_order = Vec::new();
-        SearchPath {
+        Self {
             token_order,
             pair_order,
             weight,
@@ -130,15 +128,10 @@ fn add_pair<'a>(
 }
 
 pub fn create_graph<'a>(
-    protocols: &'a Vec<Protocol>,
+    allpairs: Vec<&'a Pair>,
     nodes: &mut HashMap<Address, NodeIndex>,
     traded_token: Address,
 ) -> Result<MyGraph<'a>> {
-    let mut allpairs = Vec::new();
-    for protocol in protocols {
-        allpairs.extend(protocol.pairs.values());
-    }
-
     let mut graph: MyGraph = MyGraph::new();
 
     let start_index = graph.add_node(traded_token);
@@ -148,21 +141,6 @@ pub fn create_graph<'a>(
         add_pair(&mut graph, pair, nodes, traded_token)?;
     }
     Ok(graph)
-}
-
-pub fn remove_token(
-    token: &Address,
-    graph: &mut MyGraph,
-    nodes: &mut HashMap<Address, NodeIndex>,
-) -> Result<()> {
-    let node_index = *nodes
-        .get(token)
-        .ok_or_else(|| anyhow!("Missing Node for removal"))?;
-    let node = graph
-        .remove_node(node_index)
-        .ok_or_else(|| anyhow!("Missing Node for removal"))?;
-    ensure!(&node == token, "Mismatched Index and Node when Removing");
-    Ok(())
 }
 
 pub fn find_shortest_path<'a>(

@@ -32,10 +32,16 @@ async fn main() {
     let provider = ethers::providers::Provider::connect(URL).await.unwrap();
     let client = Arc::new(provider);
     let cfg = Config::new(DB_PATH);
+
     let pool = Arc::new(cfg.create_pool(Runtime::Tokio1).unwrap());
     let (protocols, _) = reload_protocols_and_pairs(client.clone(), pool.clone())
         .await
         .unwrap();
+
+    let mut arcs = Vec::with_capacity(protocols.len());
+    for protocol in protocols {
+        arcs.push(Arc::new(protocol))
+    }
 
     dbg!(protocols[3]
         .router

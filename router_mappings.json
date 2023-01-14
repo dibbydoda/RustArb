@@ -1,0 +1,17 @@
+{
+  "swapETHForExactTokens" :     "EthForExact",
+  "swapExactETHForTokens" :     "ExactEth",
+  "swapExactTokensForETH" :     "ExactOther",
+  "swapExactTokensForTokens" :  "ExactOther",
+  "swapTokensForExactETH":      "OtherForExact",
+  "swapTokensForExactTokens":   "OtherForExact",
+
+  "swapExactETHForTokensSupportingFeeOnTransferTokens" :  "ExactEth",
+  "swapExactTokensForETHSupportingFeeOnTransferTokens" :  "ExactOther",
+  "swapExactTokensForTokensSupportingFeeOnTransferTokens" :  "ExactOther",
+
+  "swapExactNativeCurrencyForTokens" :  "ExactEth",
+  "swapExactTokensForNativeCurrency" :  "ExactOther",
+  "swapNativeCurrencyForExactTokens" :  "EthForExact",
+  "swapTokensForExactNativeCurrency":   "OtherForExact"
+}

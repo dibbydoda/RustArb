@@ -48,7 +48,9 @@ impl<'a> GetPairCall<'a> {
         let mut addresses = Vec::with_capacity(address_tokens.len());
         for token in address_tokens {
             addresses.push(PairAddress(
-                token.into_address().ok_or_else(|| anyhow!("Token cannot convert into address"))?,
+                token
+                    .into_address()
+                    .ok_or_else(|| anyhow!("Token cannot convert into address"))?,
             ))
         }
 
@@ -85,11 +87,11 @@ struct RawProtocol {
 
 #[derive(Debug)]
 pub struct Protocol {
-    factory: ethers::contract::Contract<WSClient>,
+    pub factory: ethers::contract::Contract<WSClient>,
     pub router: ethers::contract::Contract<WSClient>,
     swap_fee: u32,
     name: String,
-    pub pairs: HashMap<Address, Pair>,
+    pub pairs: HashMap<(Address, Address), Pair>,
     pool: Arc<Pool>,
 }
 
@@ -261,16 +263,19 @@ impl Protocol {
             let address = partial.address;
             let contract = address.generate_pool_contract(client.clone());
             self.pairs.insert(
-                address.0,
-                Pair::new(contract, partial.token0, partial.token1, self.swap_fee),
+                (partial.token0, partial.token1),
+                Pair::new(
+                    contract,
+                    partial.token0,
+                    partial.token1,
+                    self.swap_fee,
+                    self.factory.address(),
+                ),
             );
         }
         Ok(())
     }
-}
 
-// Called by public functions
-impl Protocol {
     async fn update_pairs(
         mut protocol: Self,
         client: WSClient,
@@ -334,6 +339,14 @@ impl Protocol {
         }
 
         Ok(protocol)
+    }
+
+    pub fn unsimualte_trade(&mut self, changed: Vec<Pair>) {
+        for pair in changed {
+            self.pairs
+                .insert(pair.get_tokens(), pair)
+                .expect("Modified version of pair not found in protocol");
+        }
     }
 }
 

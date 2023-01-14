@@ -1,12 +1,13 @@
-use std::collections::HashMap;
+use std::borrow::Borrow;
+use std::collections::{BTreeMap, HashMap};
 use std::iter::zip;
 use std::sync::Arc;
 
-use crate::txpool::Gas::{Legacy, London};
-use crate::txpool::TradeParams::{ExactInput, ExactOutput};
+use crate::trade::TradeParams::{ExactInput, ExactOutput};
+use crate::trade::{FoundTrades, SwapExact, SwapForExact, Trade, TradeParams, TradeType};
 use crate::v2protocol::Protocol;
 use anyhow::{anyhow, ensure, Result};
-use ethers::abi::{Detokenize, InvalidOutputType, Param, Token, Tokenizable};
+use ethers::abi::{Detokenize, Param, Tokenizable};
 use ethers::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -14,121 +15,13 @@ pub type WSClient = Arc<Provider<Ws>>;
 
 const ROUTER_MAP: &str = "router_mappings.json";
 
-enum TradeParams {
-    ExactInput(SwapExact),
-    ExactOutput(SwapForExact),
-}
-
-#[derive(Deserialize, Serialize)]
-pub enum TradeType {
-    ExactEth,
-    ExactOther,
-    EthForExact,
-    OtherForExact,
-}
-
-enum Gas {
-    Legacy(U256),
-    London(U256, U256),
-}
-
-struct Trade {
-    to: Address,
-    from: Address,
-    params: TradeParams,
-    gas: Gas,
-    protocol: Arc<Protocol>,
-}
-
-impl Trade {
-    fn new(
-        to: Address,
-        from: Address,
-        params: TradeParams,
-        gas: Gas,
-        protocol: Arc<Protocol>,
-    ) -> Self {
-        Self {
-            to,
-            from,
-            params,
-            gas,
-            protocol,
-        }
-    }
-}
-
-struct SwapForExact {
-    amount_out: U256,
-    amount_in_max: U256,
-    path: Vec<Address>,
-    to: Address,
-    deadline: U256,
-}
-
-impl Detokenize for SwapForExact {
-    fn from_tokens(tokens: Vec<Token>) -> std::result::Result<Self, InvalidOutputType>
-    where
-        Self: Sized,
-    {
-        if tokens.len() != 5 {
-            return Err(InvalidOutputType("Incorrect number of tokens".to_string()));
-        }
-        let amount_out: U256 = U256::from_token(tokens[0].clone())?;
-        let amount_in_max: U256 = U256::from_token(tokens[1].clone())?;
-        let path: Vec<Address> = Vec::from_token(tokens[2].clone())?;
-        let to: Address = Address::from_token(tokens[3].clone())?;
-        let deadline: U256 = U256::from_token(tokens[4].clone())?;
-
-        Ok(Self {
-            amount_out,
-            amount_in_max,
-            path,
-            to,
-            deadline,
-        })
-    }
-}
-
-struct SwapExact {
-    amount_in: U256,
-    amount_out_min: U256,
-    path: Vec<Address>,
-    to: Address,
-    deadline: U256,
-}
-
-impl Detokenize for SwapExact {
-    fn from_tokens(tokens: Vec<Token>) -> std::result::Result<Self, InvalidOutputType>
-    where
-        Self: Sized,
-    {
-        if tokens.len() != 5 {
-            return Err(InvalidOutputType("Incorrect number of tokens".to_string()));
-        }
-        let amount_in: U256 = U256::from_token(tokens[0].clone())?;
-        let amount_out_min: U256 = U256::from_token(tokens[1].clone())?;
-        let path: Vec<Address> = Vec::from_token(tokens[2].clone())?;
-        let to: Address = Address::from_token(tokens[3].clone())?;
-        let deadline: U256 = U256::from_token(tokens[4].clone())?;
-
-        Ok(Self {
-            amount_in,
-            amount_out_min,
-            path,
-            to,
-            deadline,
-        })
-    }
-}
-
-struct FilteredTransactions {
-    protocol: Arc<Protocol>,
+struct FilteredTransactions<'a> {
+    protocol: &'a mut Protocol,
     transactions: Vec<Transaction>,
 }
 
-impl FilteredTransactions {
-    const fn new(protocol: Arc<Protocol>) -> Self {
+impl<'a> FilteredTransactions<'a> {
+    fn new(protocol: &'a mut Protocol) -> Self {
         let transactions = Vec::new();
         Self {
             protocol,
@@ -139,52 +32,32 @@ impl FilteredTransactions {
     async fn decode_transactions(
         self,
         transaction_lookup: Arc<HashMap<String, TradeType>>,
-    ) -> Result<Vec<Trade>> {
+    ) -> Result<FoundTrades> {
         let mut trades = Vec::new();
         for transaction in &self.transactions {
             let params = match decode_trade_params(
-                &self.protocol.router,
+                self.protocol.router.borrow(),
                 transaction,
                 transaction_lookup.clone(),
             )? {
                 Some(param) => param,
                 None => continue,
             };
-            let gas = match &transaction.transaction_type {
-                None => Legacy(
-                    transaction
-                        .gas_price
-                        .ok_or_else(|| anyhow!("Legacy transaction must have gas price"))?,
-                ),
-                Some(t) => {
-                    if t.as_u64() == 2 {
-                        London(
-                            transaction
-                                .max_fee_per_gas
-                                .ok_or_else(|| anyhow!("London transaction must have max fee"))?,
-                            transaction.max_priority_fee_per_gas.ok_or_else(|| {
-                                anyhow!("London transaction must have max priority fee")
-                            })?,
-                        )
-                    } else {
-                        continue;
-                    }
-                }
-            };
+            let gas = transaction.gas;
             let to = transaction
                 .to
                 .ok_or_else(|| anyhow!("Trade should have to parameter"))?;
-            let trade = Trade::new(to, transaction.from, params, gas, self.protocol.clone());
+            let trade = Trade::new(to, transaction.from, params, gas, self.protocol.factory.address())?;
             trades.push(trade);
         }
 
-        Ok(trades)
+        Ok(FoundTrades::new(self.protocol.factory.address(), trades))
     }
 }
 
 async fn get_all_transactions(client: WSClient) -> Result<Vec<Transaction>> {
     let mut transactions = Vec::new();
-    let txpool = client.txpool_content().await?;
+    let txpool: TxpoolContent = client.request("txpool_content", ()).await?;
     for sender in txpool.pending.into_values() {
         transactions.extend(sender.into_values());
     }
@@ -193,7 +66,7 @@ async fn get_all_transactions(client: WSClient) -> Result<Vec<Transaction>> {
 
 fn filter_router_transactions(
     transactions: Vec<Transaction>,
-    protocols: Vec<Arc<Protocol>>,
+    protocols: Vec<&mut Protocol>,
 ) -> Vec<FilteredTransactions> {
     let mut router_addresses = HashMap::new();
     for protocol in protocols {
@@ -270,24 +143,49 @@ fn get_params_from_name(
     Ok(params)
 }
 
-async fn get_all_trades(client: WSClient, protocols: Vec<Arc<Protocol>>) -> Result<Vec<Trade>> {
-    let transactions = get_all_transactions(client.clone()).await?;
-    let filtered = filter_router_transactions(transactions, protocols);
+pub async fn get_all_trades(
+    client: WSClient,
+    protocols: Vec<&mut Protocol>,
+) -> Result<Vec<FoundTrades>> {
     let tx_lookup: HashMap<String, TradeType> =
         serde_json::from_str(tokio::fs::read_to_string(ROUTER_MAP).await?.as_str())?;
+    let transactions = get_all_transactions(client.clone()).await?;
+    let mut found_trades = Vec::with_capacity(protocols.len());
+    let mut futures = Vec::new();
 
+    let filtered = filter_router_transactions(transactions, protocols);
     let tx_arc = Arc::new(tx_lookup);
-    let mut handles = Vec::new();
 
-    for filter in filtered {
-        handles.push(tokio::spawn(filter.decode_transactions(tx_arc.clone())));
+    for filter in filtered.into_iter() {
+        futures.push(filter.decode_transactions(tx_arc.clone()));
     }
 
-    let mut trades = Vec::new();
-    let outcome = futures::future::join_all(handles).await;
+    let outcome = futures::future::join_all(futures).await;
 
     for item in outcome {
-        trades.extend(item??);
+        found_trades.push(item?);
     }
-    Ok(trades)
+    Ok(found_trades)
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+struct TxpoolContent {
+    pub pending: BTreeMap<H160, BTreeMap<String, Transaction>>,
+    pub queued: BTreeMap<H160, BTreeMap<String, Transaction>>,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Transaction {
+    pub hash: H256,
+    pub nonce: U256,
+    pub block_hash: Option<H256>,
+    pub block_number: Option<U256>,
+    pub from: H160,
+    pub to: Option<H160>,
+    pub value: U256,
+    pub gas_price: U256,
+    pub gas: U256,
+    pub input: Bytes,
+    pub transaction_index: Option<U256>,
 }

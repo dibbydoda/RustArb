@@ -7,7 +7,7 @@ use std::panic::panic_any;
 use std::str::FromStr;
 use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Pair {
     pub contract: SwapPool<WSClient>,
     token0: Address,
@@ -15,6 +15,7 @@ pub struct Pair {
     pub reserve0: u128,
     pub reserve1: u128,
     fee: u32,
+    pub factory_address: Address
 }
 
 #[derive(serde::Deserialize)]
@@ -47,6 +48,7 @@ impl Pair {
         token0: Address,
         token1: Address,
         fee: u32,
+        factory_address: Address
     ) -> Self {
         Self {
             contract,
@@ -55,6 +57,7 @@ impl Pair {
             reserve0: 0,
             reserve1: 0,
             fee,
+            factory_address
         }
     }
 
@@ -67,6 +70,7 @@ impl Pair {
             reserve0: json.reserve0,
             reserve1: json.reserve1,
             fee: json.fee,
+            factory_address: Address::zero()
         }
     }
 

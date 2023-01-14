@@ -3,25 +3,28 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::str::FromStr;
+
 use std::sync::Arc;
-use std::time::Instant;
 
-use deadpool_sqlite::{Config, Pool, Runtime};
-use ethers::prelude::Address;
-use petgraph::stable_graph::NodeIndex;
-
-use crate::graph::{create_graph, find_shortest_path};
+use crate::graph::{create_graph, find_shortest_path, Path};
 use crate::pair::{generate_custom_pairs, Pair};
+use crate::txpool::get_all_trades;
 use crate::v2protocol::{
-    generate_protocols, get_all_reserves, update_all_pairs, Protocol, WSClient,
+    generate_protocols, get_all_pairs, get_all_reserves, update_all_pairs, Protocol, WSClient,
 };
+use deadpool_sqlite::{Config, Pool, Runtime};
+use ethers::prelude::{Address, U256};
+use petgraph::stable_graph::NodeIndex;
 
 mod graph;
 mod pair;
+mod trade;
 mod txpool;
 mod v2protocol;
 
-const URL: &str = "wss://moonbeam.api.onfinality.io/ws?apikey=e1452126-1bc9-409a-b663-a7ae8e150c8b";
+// const URL: &str = "wss://moonbeam.api.onfinality.io/ws?apikey=e1452126-1bc9-409a-b663-a7ae8e150c8b";
+
+const URL: &str = "ws://127.0.0.1:9944";
 const PROTOCOLS_PATH: &str = "protocols.json";
 const TRADED_TOKEN: &str = "0xAcc15dC74880C9944775448304B263D191c6077F";
 const DB_PATH: &str = "pair_data.db";
@@ -34,21 +37,14 @@ async fn main() {
     let cfg = Config::new(DB_PATH);
 
     let pool = Arc::new(cfg.create_pool(Runtime::Tokio1).unwrap());
-    let (protocols, _) = reload_protocols_and_pairs(client.clone(), pool.clone())
+    let (mut protocols, _) = reload_protocols_and_pairs(client.clone(), pool.clone())
         .await
         .unwrap();
 
-    let mut arcs = Vec::with_capacity(protocols.len());
-    for protocol in protocols {
-        arcs.push(Arc::new(protocol))
-    }
-
-    dbg!(protocols[3]
-        .router
-        .abi()
-        .functions
-        .keys()
-        .collect::<Vec<&String>>());
+    let trades = get_all_trades(client.clone(), protocols.iter_mut().collect())
+        .await
+        .unwrap();
+    dbg!(&trades);
 }
 
 async fn reload_protocols_and_pairs(
@@ -68,14 +64,14 @@ async fn reload_protocols_and_pairs(
     Ok((protocol??, pairs??))
 }
 
-/*
-let mut nodes: HashMap<Address, NodeIndex> = HashMap::new();
+fn find_best_trade(protocols: &mut HashMap<Address, Protocol>, amount: U256) -> (Path, U256) {
+    let mut nodes: HashMap<Address, NodeIndex> = HashMap::new();
+    let all_pairs = get_all_pairs(protocols.values().collect());
+    let target = Address::from_str(TRADED_TOKEN).unwrap();
 
-let graph = create_graph(&protocols, &mut nodes, target).unwrap();
-let amt: u128 = 100_000_000_000_000_000_000;
-let shortest = find_shortest_path(&graph, nodes, &target, amt.into()).unwrap();
-let outputs = shortest.get_amounts_out(amt.into()).unwrap();
+    let graph = create_graph(all_pairs, &mut nodes, target).unwrap();
+    let shortest = find_shortest_path(&graph, nodes, &target, amount).unwrap();
+    let outputs = shortest.get_amounts_out(amount, protocols).unwrap();
 
-dbg!(&shortest);
-dbg!(outputs);
-*/
+    (shortest, outputs.last().unwrap().to_owned())
+}

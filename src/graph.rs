@@ -9,13 +9,29 @@ use ethers::types::U256;
 use petgraph::adj::DefaultIx;
 use petgraph::prelude::{EdgeIndex, EdgeRef, NodeIndex, StableGraph};
 use petgraph::Directed;
+use crate::v2protocol::Protocol;
 
 const MAX_NUM_SWAPS: usize = 4; // Num of tokens, therefore max pairs is 4
 
 #[derive(Debug)]
-pub struct Path<'a> {
-    token_order: Vec<Address>,
-    pair_order: Vec<&'a Pair>,
+pub struct Path {
+    pub token_order: Vec<Address>,
+    pub pair_order: Vec<PairLookup>,
+}
+
+#[derive(Debug)]
+pub struct PairLookup {
+    pub factory_address: Address,
+    pub pair_addresses: (Address, Address)
+}
+
+impl PairLookup {
+    pub fn new(factory_address: Address, pair_addresses: (Address, Address)) -> Self {
+        Self {
+            factory_address,
+            pair_addresses
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -37,8 +53,8 @@ impl SearchPath {
     }
 }
 
-impl<'a> Path<'a> {
-    pub fn from_search_path(graph: &MyGraph<'a>, searched: SearchPath) -> Result<Self> {
+impl Path {
+    pub fn from_search_path(graph: &MyGraph, searched: SearchPath) -> Result<Self> {
         let token_order = searched
             .token_order
             .iter()
@@ -56,26 +72,46 @@ impl<'a> Path<'a> {
                 graph
                     .edge_weight(*edge)
                     .ok_or_else(|| anyhow!("Missing edge"))
-                    .map(|edge| *edge)
+                    .map(|edge| PairLookup::new(edge.factory_address, edge.get_tokens()))
             })
-            .collect::<Result<Vec<&Pair>>>()?;
+            .collect::<Result<Vec<PairLookup>>>()?;
 
         Ok(Path {
-            token_order,
-            pair_order,
+            token_order, 
+            pair_order
         })
     }
 
-    pub fn get_amounts_out(&self, input: U256) -> Result<Vec<U256>> {
-        let mut amounts = Vec::with_capacity(self.pair_order.len());
+    pub fn get_amounts_out(&self, input: U256, protocols: &HashMap<Address, Protocol>) -> Result<Vec<U256>> {
+        let mut amounts = Vec::with_capacity(self.token_order.len());
         let mut current_amount = input;
         amounts.push(current_amount);
 
-        for (input, pair) in zip(&self.token_order, &self.pair_order) {
+        for (input, pair_key) in zip(&self.token_order, &self.pair_order) {
+            let pair = protocols.get(&pair_key.factory_address).expect("Protocol not found")
+                .pairs
+                .get(&pair_key.pair_addresses)
+                .ok_or_else(|| anyhow!("Pair not found in protocol"))?;
             current_amount = pair.get_amount_out(*input, current_amount)?;
             amounts.push(current_amount);
         }
 
+        Ok(amounts)
+    }
+
+    pub fn get_amounts_in(&self, output: U256, protocols: &HashMap<Address, Protocol>) -> Result<Vec<U256>> {
+        let mut amounts = Vec::with_capacity(self.pair_order.len());
+        let mut current_amount = output;
+        amounts.push(current_amount);
+
+        for (input, pair_key) in zip(&self.token_order, &self.pair_order).rev() {
+            let pair = protocols.get(&pair_key.factory_address).expect("Protocol not found")
+                .pairs
+                .get(&pair_key.pair_addresses)
+                .ok_or_else(|| anyhow!("Pair not found in protocol"))?;
+            current_amount = pair.get_amount_in(*input, current_amount)?;
+            amounts.insert(0, current_amount);
+        }
         Ok(amounts)
     }
 }
@@ -148,7 +184,7 @@ pub fn find_shortest_path<'a>(
     nodes: HashMap<Address, NodeIndex>,
     target: &Address,
     amount_in: U256,
-) -> Result<Path<'a>> {
+) -> Result<Path> {
     let goal = *nodes
         .get(target)
         .ok_or_else(|| anyhow!("Missing target node"))?;

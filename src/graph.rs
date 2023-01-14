@@ -3,33 +3,33 @@ use std::collections::HashMap;
 use std::iter::zip;
 
 use crate::pair::Pair;
+use crate::v2protocol::Protocol;
 use anyhow::{anyhow, Result};
 use ethers::prelude::Address;
 use ethers::types::U256;
 use petgraph::adj::DefaultIx;
 use petgraph::prelude::{EdgeIndex, EdgeRef, NodeIndex, StableGraph};
 use petgraph::Directed;
-use crate::v2protocol::Protocol;
 
 const MAX_NUM_SWAPS: usize = 4; // Num of tokens, therefore max pairs is 4
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Path {
     pub token_order: Vec<Address>,
     pub pair_order: Vec<PairLookup>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct PairLookup {
     pub factory_address: Address,
-    pub pair_addresses: (Address, Address)
+    pub pair_addresses: (Address, Address),
 }
 
 impl PairLookup {
     pub fn new(factory_address: Address, pair_addresses: (Address, Address)) -> Self {
         Self {
             factory_address,
-            pair_addresses
+            pair_addresses,
         }
     }
 }
@@ -77,18 +77,24 @@ impl Path {
             .collect::<Result<Vec<PairLookup>>>()?;
 
         Ok(Path {
-            token_order, 
-            pair_order
+            token_order,
+            pair_order,
         })
     }
 
-    pub fn get_amounts_out(&self, input: U256, protocols: &HashMap<Address, Protocol>) -> Result<Vec<U256>> {
+    pub fn get_amounts_out(
+        &self,
+        input: U256,
+        protocols: &HashMap<Address, Protocol>,
+    ) -> Result<Vec<U256>> {
         let mut amounts = Vec::with_capacity(self.token_order.len());
         let mut current_amount = input;
         amounts.push(current_amount);
 
         for (input, pair_key) in zip(&self.token_order, &self.pair_order) {
-            let pair = protocols.get(&pair_key.factory_address).expect("Protocol not found")
+            let pair = protocols
+                .get(&pair_key.factory_address)
+                .expect("Protocol not found")
                 .pairs
                 .get(&pair_key.pair_addresses)
                 .ok_or_else(|| anyhow!("Pair not found in protocol"))?;
@@ -99,13 +105,19 @@ impl Path {
         Ok(amounts)
     }
 
-    pub fn get_amounts_in(&self, output: U256, protocols: &HashMap<Address, Protocol>) -> Result<Vec<U256>> {
+    pub fn get_amounts_in(
+        &self,
+        output: U256,
+        protocols: &HashMap<Address, Protocol>,
+    ) -> Result<Vec<U256>> {
         let mut amounts = Vec::with_capacity(self.pair_order.len());
         let mut current_amount = output;
         amounts.push(current_amount);
 
         for (input, pair_key) in zip(&self.token_order, &self.pair_order).rev() {
-            let pair = protocols.get(&pair_key.factory_address).expect("Protocol not found")
+            let pair = protocols
+                .get(&pair_key.factory_address)
+                .expect("Protocol not found")
                 .pairs
                 .get(&pair_key.pair_addresses)
                 .ok_or_else(|| anyhow!("Pair not found in protocol"))?;

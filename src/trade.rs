@@ -22,10 +22,11 @@ pub struct FoundTrades {
 }
 
 impl FoundTrades {
-    fn simulate_trades<'a>(
+    pub fn simulate_trades<'a>(
         &'a self,
         protocols: &'a mut HashMap<Address, Protocol>,
         input_amount: U256,
+        custom_pairs: &Vec<Pair>,
     ) -> Vec<PossibleArbitrage> {
         let mut possible_arbitrages = Vec::new();
         for trade in &self.trades {
@@ -39,7 +40,7 @@ impl FoundTrades {
                 .expect("Protocol not found in protocols");
             let changed = trade.simulate(mut_protocol, checked_amounts);
 
-            let (path, output) = find_best_trade(protocols, input_amount);
+            let (path, output) = find_best_trade(protocols, input_amount, custom_pairs);
             possible_arbitrages.push(PossibleArbitrage::new(path, trade.gas, output));
             let protocol = protocols
                 .get_mut(&self.protocol)
@@ -50,10 +51,11 @@ impl FoundTrades {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct PossibleArbitrage {
-    path: Path,
-    gas: U256,
-    output: U256,
+    pub path: Path,
+    pub gas: U256,
+    pub output: U256,
 }
 
 impl PossibleArbitrage {

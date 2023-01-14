@@ -43,11 +43,17 @@ impl<'a> FilteredTransactions<'a> {
                 Some(param) => param,
                 None => continue,
             };
-            let gas = transaction.gas;
+            let gas = transaction.gas_price;
             let to = transaction
                 .to
                 .ok_or_else(|| anyhow!("Trade should have to parameter"))?;
-            let trade = Trade::new(to, transaction.from, params, gas, self.protocol.factory.address())?;
+            let trade = Trade::new(
+                to,
+                transaction.from,
+                params,
+                gas,
+                self.protocol.factory.address(),
+            )?;
             trades.push(trade);
         }
 

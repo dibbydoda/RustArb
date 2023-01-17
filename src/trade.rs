@@ -59,7 +59,7 @@ pub struct PossibleArbitrage {
 }
 
 impl PossibleArbitrage {
-    pub fn new(path: Path, gas: U256, output: U256) -> Self {
+    pub const fn new(path: Path, gas: U256, output: U256) -> Self {
         Self { path, gas, output }
     }
 }

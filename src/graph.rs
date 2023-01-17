@@ -26,7 +26,7 @@ pub struct PairLookup {
 }
 
 impl PairLookup {
-    pub fn new(factory_address: Address, pair_addresses: (Address, Address)) -> Self {
+    pub const fn new(factory_address: Address, pair_addresses: (Address, Address)) -> Self {
         Self {
             factory_address,
             pair_addresses,
@@ -76,7 +76,7 @@ impl Path {
             })
             .collect::<Result<Vec<PairLookup>>>()?;
 
-        Ok(Path {
+        Ok(Self{
             token_order,
             pair_order,
         })

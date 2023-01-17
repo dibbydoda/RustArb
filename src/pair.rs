@@ -74,10 +74,6 @@ impl Pair {
         }
     }
 
-    pub fn contains(self, token: &Address) -> bool {
-        *token == self.token0 || *token == self.token1
-    }
-
     pub const fn get_tokens(&self) -> (Address, Address) {
         (self.token0, self.token1)
     }

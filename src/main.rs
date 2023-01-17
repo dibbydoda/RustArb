@@ -2,7 +2,8 @@
 
 use anyhow::Result;
 use std::collections::HashMap;
-use std::future::Future;
+use std::env;
+
 use std::ops::Div;
 use std::str::FromStr;
 
@@ -15,9 +16,16 @@ use crate::txpool::get_all_trades;
 use crate::v2protocol::{
     generate_protocols, get_all_pairs, get_all_reserves, update_all_pairs, Protocol, WSClient,
 };
+use async_trait::async_trait;
 use deadpool_sqlite::{Config, Pool, Runtime};
+use ethers::abi::Detokenize;
 use ethers::contract::abigen;
-use ethers::prelude::{Address, U256};
+use ethers::prelude::builders::ContractCall;
+use ethers::prelude::{Address, LocalWallet, Middleware, Signer, TransactionRequest, U256};
+use ethers::types::TransactionReceipt;
+use ethers::utils::parse_units;
+use futures::future::join_all;
+use futures::stream::StreamExt;
 use petgraph::stable_graph::NodeIndex;
 
 mod graph;
@@ -42,10 +50,13 @@ abigen!(ArbContract, "abis/ArbContract.json");
 
 #[tokio::main]
 async fn main() {
+    dotenv::dotenv().expect("MISSING .env FILE");
+
     let provider = ethers::providers::Provider::connect(URL).await.unwrap();
     let client = Arc::new(provider);
     let cfg = Config::new(DB_PATH);
     let pool = Arc::new(cfg.create_pool(Runtime::Tokio1).unwrap());
+
     let traded_token: erc20<WSClient> = erc20::new(
         Address::from_str(TRADED_TOKEN).unwrap(),
         Arc::new(client.clone()),
@@ -54,6 +65,16 @@ async fn main() {
         Address::from_str(ARBITRAGE_CONTRACT).unwrap(),
         Arc::new(client.clone()),
     );
+
+    let (main_wallet, other_wallets) = get_wallets().unwrap();
+    ensure_gas_reserves(
+        client.clone(),
+        &main_wallet,
+        &other_wallets,
+        &arbitrage_contract,
+    )
+    .await
+    .unwrap();
 
     let (mut protocols, pairs) = reload_protocols_and_pairs(client.clone(), pool.clone())
         .await
@@ -166,5 +187,99 @@ async fn get_profitable_arbitrage(
                 None
             }
         }
+    }
+}
+
+async fn ensure_gas_reserves(
+    client: WSClient,
+    main_account: &LocalWallet,
+    other_accounts: &[LocalWallet],
+    arb_contract: &ArbContract<WSClient>,
+) -> Result<()> {
+    let current_main_reserve = client.get_balance(main_account.address(), None).await?;
+
+    let balance_reserve = env::var("BALANCE_RESERVE").expect("BALANCE_RESERVE missing from .env");
+    let balance_reserve = U256::from_dec_str(balance_reserve.as_str())
+        .expect("Balance reserve could not be interpreted as U256");
+
+    let low_accounts = futures::stream::iter(other_accounts.iter())
+        .filter(|account| async {
+            client.get_balance(account.address(), None).await.unwrap() < balance_reserve
+        })
+        .collect::<Vec<&LocalWallet>>()
+        .await;
+
+    let top_ups = low_accounts.len() + (current_main_reserve < balance_reserve) as usize;
+
+    if top_ups > 0 {
+        let amount = balance_reserve.saturating_mul(top_ups.into());
+        let tx = arb_contract.withdraw_eth(amount);
+        let receipt: TransactionReceipt = tx
+            .send_raw(main_account.clone(), client.clone())
+            .await?
+            .unwrap();
+        assert_eq!(receipt.status.unwrap().as_u64(), 1);
+
+        println!(
+            "Withdrew {} wrapped token for gas.",
+            parse_units(amount, "wei").unwrap()
+        );
+
+        let mut futures = Vec::with_capacity(low_accounts.len());
+        for account in low_accounts {
+            futures.push(pay(account.address(), amount, main_account, client.clone()))
+        }
+
+        join_all(futures).await;
+    }
+
+    Ok(())
+}
+
+async fn pay(
+    receiver: Address,
+    amount: U256,
+    sender: &LocalWallet,
+    client: WSClient,
+) -> Result<TransactionReceipt> {
+    let request = TransactionRequest::pay(receiver, amount);
+    let signature = sender.sign_transaction(&request.clone().into()).await?;
+    let tx = request.rlp_signed(&signature);
+    Ok(client.send_raw_transaction(tx).await?.await?.unwrap())
+}
+
+fn get_wallets() -> Result<(LocalWallet, Vec<LocalWallet>)> {
+    let mut wallets = Vec::with_capacity(TRANSACTION_ATTEMPTS as usize);
+    let private_key = env::var("KEYMAIN")?;
+    let main_wallet = LocalWallet::from_str(private_key.as_str())?;
+    for i in 1..=TRANSACTION_ATTEMPTS {
+        let key_str = format!("KEY{}", i);
+        let private_key = env::var(key_str)?;
+        wallets.push(LocalWallet::from_str(private_key.as_str())?);
+    }
+    Ok((main_wallet, wallets))
+}
+
+#[async_trait]
+trait SendRaw {
+    async fn send_raw(
+        &self,
+        signer: LocalWallet,
+        client: WSClient,
+    ) -> Result<Option<TransactionReceipt>>;
+}
+
+#[async_trait]
+impl<D: Detokenize + Send + Sync, C: Sync + Send> SendRaw for ContractCall<C, D> {
+    async fn send_raw(
+        &self,
+        signer: LocalWallet,
+        client: WSClient,
+    ) -> Result<Option<TransactionReceipt>> {
+        let signature = signer.sign_transaction(&self.tx).await?;
+        let tx = self.tx.rlp_signed(&signature);
+
+        let pending = client.send_raw_transaction(tx).await?.await?;
+        Ok(pending)
     }
 }

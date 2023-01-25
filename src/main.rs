@@ -1,18 +1,13 @@
 #![warn(clippy::all, clippy::nursery)]
 
-use anyhow::{bail, Result};
 use std::collections::HashMap;
 use std::env;
-
 use std::ops::Div;
 use std::str::FromStr;
-
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::pair::{generate_custom_pairs, Pair};
-use crate::trade::{Gas, PossibleArbitrage};
-use crate::txpool::TxPool;
-use crate::v2protocol::{generate_protocols, update_all_pairs, Protocol, WSClient};
+use anyhow::{bail, Result};
 use async_trait::async_trait;
 use deadpool_sqlite::{Config, Pool, Runtime};
 use ethers::abi::Detokenize;
@@ -26,8 +21,12 @@ use futures::future::join_all;
 use futures::stream::StreamExt;
 use futures::FutureExt;
 use lazy_static::lazy_static;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::Instant;
+
+use crate::pair::{generate_custom_pairs, Pair};
+use crate::trade::{Gas, PossibleArbitrage};
+use crate::txpool::TxPool;
+use crate::v2protocol::{generate_protocols, update_all_pairs, Protocol, WSClient};
 
 mod graph;
 mod pair;

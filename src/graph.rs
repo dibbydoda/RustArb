@@ -3,14 +3,15 @@ use std::collections::HashMap;
 use std::iter::{zip, Chain, FlatMap};
 use std::slice::Iter;
 
-use crate::pair::Pair;
-use crate::v2protocol::Protocol;
 use anyhow::{anyhow, Result};
 use ethers::prelude::{Address, H160};
 use ethers::types::U256;
 use petgraph::adj::DefaultIx;
 use petgraph::prelude::{EdgeIndex, EdgeRef, Graph, NodeIndex};
 use petgraph::{Outgoing, Undirected};
+
+use crate::pair::Pair;
+use crate::v2protocol::Protocol;
 
 const MAX_NUM_SWAPS: usize = 4; // Num of tokens, therefore max pairs is 4
 

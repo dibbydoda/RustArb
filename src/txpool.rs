@@ -3,13 +3,6 @@ use std::collections::HashMap;
 use std::iter::zip;
 use std::sync::Arc;
 
-use crate::pair::Pair;
-use crate::reload_protocols_and_pairs;
-use crate::trade::TradeParams::{ExactInput, ExactOutput};
-use crate::trade::{
-    find_best_trade, Gas, PossibleArbitrage, SwapExact, SwapForExact, Trade, TradeParams, TradeType,
-};
-use crate::v2protocol::Protocol;
 use anyhow::{anyhow, ensure, Result};
 use deadpool_sqlite::Pool;
 use ethers::abi::{Detokenize, Param, Tokenizable};
@@ -17,6 +10,14 @@ use ethers::prelude::*;
 use futures::future::{join_all, try_join_all};
 use futures::FutureExt;
 use rustc_hash::FxHashMap;
+
+use crate::pair::Pair;
+use crate::reload_protocols_and_pairs;
+use crate::trade::TradeParams::{ExactInput, ExactOutput};
+use crate::trade::{
+    find_best_trade, Gas, PossibleArbitrage, SwapExact, SwapForExact, Trade, TradeParams, TradeType,
+};
+use crate::v2protocol::Protocol;
 
 pub type WSClient = Arc<Provider<Ws>>;
 

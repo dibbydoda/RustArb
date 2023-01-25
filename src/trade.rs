@@ -1,16 +1,18 @@
-use crate::graph::{create_graph, find_shortest_path, PairLookup, Path};
-use crate::pair::Pair;
-use crate::v2protocol::{get_all_pairs, Protocol};
-use crate::{estimate_gas, TRADED_TOKEN};
+use std::collections::HashMap;
+use std::iter::zip;
+use std::str::FromStr;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use anyhow::{ensure, Result};
 use ethers::abi::{Detokenize, InvalidOutputType, Token, Tokenizable};
 use ethers::prelude::{Address, U256};
 use ethers::types::H256;
 use petgraph::stable_graph::NodeIndex;
-use std::collections::HashMap;
-use std::iter::zip;
-use std::str::FromStr;
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::graph::{create_graph, find_shortest_path, PairLookup, Path};
+use crate::pair::Pair;
+use crate::v2protocol::{get_all_pairs, Protocol};
+use crate::{estimate_gas, TRADED_TOKEN};
 
 #[derive(Debug)]
 pub enum TradeParams {

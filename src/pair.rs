@@ -1,11 +1,13 @@
-use crate::v2protocol::{SwapPool, WSClient};
-use anyhow::Result;
-use ethers::prelude::Address;
-use ethers::types::U256;
 use std::fmt::Debug;
 use std::panic::panic_any;
 use std::str::FromStr;
+
+use anyhow::Result;
+use ethers::prelude::Address;
+use ethers::types::U256;
 use thiserror::Error;
+
+use crate::v2protocol::{SwapPool, WSClient};
 
 #[derive(Debug, Clone)]
 pub struct Pair {
@@ -15,7 +17,7 @@ pub struct Pair {
     pub reserve0: u128,
     pub reserve1: u128,
     pub fee: u32,
-    pub factory_address: Address
+    pub factory_address: Address,
 }
 
 #[derive(serde::Deserialize)]
@@ -48,7 +50,7 @@ impl Pair {
         token0: Address,
         token1: Address,
         fee: u32,
-        factory_address: Address
+        factory_address: Address,
     ) -> Self {
         Self {
             contract,
@@ -57,7 +59,7 @@ impl Pair {
             reserve0: 0,
             reserve1: 0,
             fee,
-            factory_address
+            factory_address,
         }
     }
 
@@ -70,7 +72,7 @@ impl Pair {
             reserve0: json.reserve0,
             reserve1: json.reserve1,
             fee: json.fee,
-            factory_address: Address::zero()
+            factory_address: Address::zero(),
         }
     }
 

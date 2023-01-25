@@ -3,6 +3,27 @@
 version = 3
 
 [[package]]
+name = "BlockStartArb"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "deadpool-sqlite",
+ "dotenv",
+ "ethers",
+ "fc-rpc-core",
+ "futures",
+ "lazy_static",
+ "petgraph",
+ "rusqlite",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "Inflector"
 version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -66,27 +87,6 @@ name = "anyhow"
 version = "1.0.68"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2cb2f989d18dd141ab8ae82f64d1a8cdd37e0840f73a406896cf5e99502fab61"
-
-[[package]]
-name = "arb"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "deadpool-sqlite",
- "dotenv",
- "ethers",
- "fc-rpc-core",
- "futures",
- "lazy_static",
- "petgraph",
- "rusqlite",
- "rustc-hash",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
 
 [[package]]
 name = "arrayvec"

@@ -5,14 +5,13 @@ use std::iter::{zip, FlatMap};
 use std::sync::Arc;
 
 use anyhow::{anyhow, ensure, Result};
-use deadpool_sqlite::rusqlite::{params, params_from_iter};
+use deadpool_sqlite::rusqlite::params;
 use deadpool_sqlite::Pool;
 use ethers::abi::{Abi, Token};
 use ethers::prelude::*;
 use futures::future::try_join_all;
 
 use crate::pair::{Pair, PairAddress, PartialPair};
-use crate::txpool::TxPool;
 
 pub type WSClient = Arc<Provider<Ws>>;
 
@@ -125,110 +124,6 @@ impl Protocol {
         })
     }
 
-    async fn update_excluded_pairs_for_protocol(&self, bad_tokens_file: &str) -> Result<()> {
-        let name = self.name.clone();
-        let bad_tokens: Vec<String> =
-            serde_json::from_str(tokio::fs::read_to_string(bad_tokens_file).await?.as_str())?;
-        let mut bad_tokens: Vec<String> = bad_tokens
-            .iter()
-            .map(|token| token.to_lowercase())
-            .collect();
-        let qmarks = repeat_vars(bad_tokens.len());
-        bad_tokens.extend(bad_tokens.clone());
-        bad_tokens.insert(0, self.name.clone());
-        let bad_tokens = params_from_iter(bad_tokens);
-        let sql = format!("UPDATE pairs SET excluded = TRUE WHERE protocol = ? AND (token0 IN ({}) OR token1 in ({}))",
-                          qmarks, qmarks);
-
-        let conn = self.pool.get().await?;
-
-        let new: usize = conn
-            .interact(move |conn| {
-                conn.execute(
-                    "UPDATE pairs SET excluded = FALSE WHERE protocol =?",
-                    [name],
-                )?;
-                conn.execute(sql.as_str(), bad_tokens)
-            })
-            .await
-            .map_err(|oops| anyhow!(oops.to_string()))??;
-
-        println!("Updated excluded pairs for {}. Now: {}", self.name, new);
-
-        Ok(())
-    }
-
-    async fn count_new_pairs(&self) -> Result<(u32, u32)> {
-        let conn = self.pool.get().await?;
-        let name = self.name.clone();
-        let current: u32 = self.factory.method("allPairsLength", ())?.call().await?;
-        let old: u32 = conn
-            .interact(|conn| {
-                conn.query_row(
-                    "SELECT COUNT(*) FROM pairs WHERE protocol = ?1",
-                    [name],
-                    |row| row.get(0),
-                )
-            })
-            .await
-            .map_err(|oops| anyhow!(oops.to_string()))??;
-
-        Ok((old, current))
-    }
-
-    async fn get_new_pairs(&self, client: WSClient) -> Result<Option<Vec<DbAddition>>> {
-        let mut multicall: Multicall<WSClient> =
-            Multicall::new(self.factory.client().clone(), None)
-                .await?
-                .version(MulticallVersion::Multicall);
-        let num_pairs = self.count_new_pairs().await?;
-        let pair_call = match GetPairCall::new(self, num_pairs) {
-            Some(paircall) => paircall,
-            None => {
-                return Ok(None);
-            }
-        };
-        let addresses = pair_call.get_pair_addresses(&mut multicall).await?;
-        let pool_contracts = addresses
-            .into_iter()
-            .map(|address| address.generate_pool_contract(client.clone()));
-
-        let length = pool_contracts.len();
-        let mut pairs: Vec<DbAddition> = Vec::with_capacity(length);
-
-        for pool in pool_contracts.clone() {
-            multicall.add_call(pool.method::<_, Address>("token0", ())?, false);
-            multicall.add_call(pool.method::<_, Address>("token1", ())?, false);
-        }
-
-        let tokens = multicall.call_raw().await?;
-        let tokens = tokens.chunks(2);
-
-        ensure!(
-            tokens.len() == length,
-            "Differing lengths of contracts and multicall returns"
-        );
-        for iter in zip(pool_contracts, tokens) {
-            let pool = iter.0;
-            let chunk = iter.1;
-
-            let new_pair = DbAddition::new(
-                pool.address(),
-                chunk[0]
-                    .to_owned()
-                    .into_address()
-                    .ok_or_else(|| anyhow!("Token cannot convert into address"))?,
-                chunk[1]
-                    .to_owned()
-                    .into_address()
-                    .ok_or_else(|| anyhow!("Token cannot convert into address"))?,
-            );
-
-            pairs.push(new_pair);
-        }
-        Ok(Some(pairs))
-    }
-
     async fn get_pair_addresses_from_db(&mut self) -> Result<Vec<PartialPair>> {
         let conn = self.pool.get().await?;
         let name = self.name.clone();
@@ -247,18 +142,6 @@ impl Protocol {
         })
         .await
         .map_err(|oops| anyhow!(oops.to_string()))?
-    }
-
-    async fn insert_into_database(&self, additions: Vec<DbAddition>) -> Result<()> {
-        let conn = self.pool.get().await?;
-        let name = self.name.to_owned();
-        conn.interact(move |conn| -> Result<()> {
-            let mut stmt = conn.prepare("INSERT INTO pairs (protocol, address, token0, token1, excluded) VALUES (?, ?, ?, ?, ?)")?;
-            for addition in additions {
-                stmt.execute(params![name, format!("{:#x}", addition.address), format!("{:#x}", addition.token0), format!("{:#x}", addition.token1), false])?;
-            }
-            Ok(())
-        }).await.map_err(|oops| anyhow!(oops.to_string()))?
     }
 
     async fn load_db_pairs(&mut self, client: WSClient) -> Result<()> {
@@ -402,23 +285,21 @@ pub async fn update_all_pairs(
     Ok(protocols)
 }
 
-impl<'a> TxPool<'a> {
-    pub async fn get_all_reserves(&mut self) -> Result<()> {
-        let protocols = &mut self.protocols;
-        let mut handles = Vec::with_capacity(protocols.len());
-        for (address, protocol) in protocols.drain() {
-            handles.push(tokio::spawn(Protocol::get_reserves(protocol, address)));
-        }
-
-        let outcome = futures::future::try_join_all(handles).await?;
-
-        for item in outcome {
-            let (protocol, address) = item?;
-            self.protocols.insert(address, protocol);
-        }
-
-        Ok(())
+pub async fn get_all_reserves(&mut self) -> Result<()> {
+    let protocols = &mut self.protocols;
+    let mut handles = Vec::with_capacity(protocols.len());
+    for (address, protocol) in protocols.drain() {
+        handles.push(tokio::spawn(Protocol::get_reserves(protocol, address)));
     }
+
+    let outcome = futures::future::try_join_all(handles).await?;
+
+    for item in outcome {
+        let (protocol, address) = item?;
+        self.protocols.insert(address, protocol);
+    }
+
+    Ok(())
 }
 
 fn repeat_vars(count: usize) -> String {

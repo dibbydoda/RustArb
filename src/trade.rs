@@ -1,12 +1,15 @@
-use crate::find_best_trade;
-use crate::graph::{PairLookup, Path};
+use crate::graph::{create_graph, find_shortest_path, PairLookup, Path};
 use crate::pair::Pair;
-use crate::v2protocol::Protocol;
+use crate::v2protocol::{get_all_pairs, Protocol};
+use crate::{estimate_gas, TRADED_TOKEN};
 use anyhow::{ensure, Result};
 use ethers::abi::{Detokenize, InvalidOutputType, Token, Tokenizable};
 use ethers::prelude::{Address, U256};
+use ethers::types::H256;
+use petgraph::stable_graph::NodeIndex;
 use std::collections::HashMap;
 use std::iter::zip;
+use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug)]
@@ -14,53 +17,34 @@ pub enum TradeParams {
     ExactInput(SwapExact),
     ExactOutput(SwapForExact),
 }
-
-#[derive(Debug)]
-pub struct FoundTrades {
-    pub protocol: Address,
-    pub trades: Vec<Trade>,
-}
-
-impl FoundTrades {
-    pub fn simulate_trades<'a>(
-        &'a self,
-        protocols: &'a mut HashMap<Address, Protocol>,
-        input_amount: U256,
-        custom_pairs: &Vec<Pair>,
-    ) -> Vec<PossibleArbitrage> {
-        let mut possible_arbitrages = Vec::new();
-        for trade in &self.trades {
-            let checked_amounts = match trade.check_trade_validity(protocols) {
-                Ok(amounts) => amounts,
-                Err(_) => continue,
-            };
-
-            let mut_protocol = protocols
-                .get_mut(&self.protocol)
-                .expect("Protocol not found in protocols");
-            let changed = trade.simulate(mut_protocol, checked_amounts);
-
-            let (path, output) = find_best_trade(protocols, input_amount, custom_pairs);
-            possible_arbitrages.push(PossibleArbitrage::new(path, trade.gas, output));
-            let protocol = protocols
-                .get_mut(&self.protocol)
-                .expect("Protocol not found in protocols");
-            protocol.unsimualte_trade(changed);
-        }
-        possible_arbitrages
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct PossibleArbitrage {
     pub path: Path,
-    pub gas: U256,
+    pub gas: Gas,
+    pub input: U256,
     pub output: U256,
+    pub profit: U256,
+    pub gas_in_eth: U256,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum Gas {
+    Legacy(U256),
+    London(U256, U256),
 }
 
 impl PossibleArbitrage {
-    pub const fn new(path: Path, gas: U256, output: U256) -> Self {
-        Self { path, gas, output }
+    pub fn new(path: Path, gas: Gas, output: U256, input: U256) -> Self {
+        let profit = output.saturating_sub(input);
+        let gas_in_eth = estimate_gas(gas);
+        Self {
+            path,
+            gas,
+            output,
+            input,
+            profit,
+            gas_in_eth,
+        }
     }
 }
 
@@ -77,12 +61,6 @@ impl Path {
             token_order: tokens,
             pair_order,
         })
-    }
-}
-
-impl FoundTrades {
-    pub fn new(protocol: Address, trades: Vec<Trade>) -> Self {
-        Self { protocol, trades }
     }
 }
 
@@ -112,28 +90,35 @@ pub enum TradeType {
 
 #[derive(Debug)]
 pub struct Trade {
+    pub tx_hash: H256,
     pub to: Address,
     pub from: Address,
     pub params: TradeParams,
-    pub gas: U256,
+    pub gas: Gas,
     pub path: Path,
+    pub protocol: Address,
+    pub simulated: bool,
 }
 
 impl Trade {
     pub fn new(
+        tx_hash: H256,
         to: Address,
         from: Address,
         params: TradeParams,
-        gas: U256,
+        gas: Gas,
         protocol: Address,
     ) -> Result<Self> {
         let path = Path::from_trade_tokens(params.get_path(), protocol)?;
         Ok(Self {
+            tx_hash,
             to,
             from,
             params,
             gas,
             path,
+            protocol,
+            simulated: false,
         })
     }
 
@@ -171,7 +156,7 @@ impl Trade {
             .expect("Time went backwards")
             .as_secs();
         ensure!(
-            self.params.get_deadline().as_u64() >= cur_unix,
+            self.params.get_deadline() >= U256::from(cur_unix),
             "Deadline Expired"
         );
 
@@ -260,4 +245,22 @@ impl Detokenize for SwapExact {
             deadline,
         })
     }
+}
+
+pub fn find_best_trade<'a>(
+    protocols: &'a mut HashMap<Address, Protocol>,
+    amount: U256,
+    custom_pairs: &'a Vec<Pair>,
+) -> (Path, U256) {
+    let mut nodes: HashMap<Address, NodeIndex> = HashMap::new();
+    let all_pairs = get_all_pairs(protocols.values());
+    let target = Address::from_str(TRADED_TOKEN.as_str()).unwrap();
+
+    let pairs = all_pairs.chain(custom_pairs);
+
+    let graph = create_graph(pairs, &mut nodes).unwrap();
+    let shortest = find_shortest_path(&graph, nodes, &target, amount).unwrap();
+    let outputs = shortest.get_amounts_out(amount, protocols).unwrap();
+
+    (shortest, outputs.last().unwrap().to_owned())
 }

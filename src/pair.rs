@@ -14,7 +14,7 @@ pub struct Pair {
     token1: Address,
     pub reserve0: u128,
     pub reserve1: u128,
-    fee: u32,
+    pub fee: u32,
     pub factory_address: Address
 }
 

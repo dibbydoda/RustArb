@@ -1,15 +1,16 @@
-use std::collections::hash_map::Entry;
+use std::collections::hash_map::{Entry, Values};
 use std::collections::HashMap;
-use std::iter::zip;
+use std::iter::{zip, Chain, FlatMap};
+use std::slice::Iter;
 
 use crate::pair::Pair;
 use crate::v2protocol::Protocol;
 use anyhow::{anyhow, Result};
-use ethers::prelude::Address;
+use ethers::prelude::{Address, H160};
 use ethers::types::U256;
 use petgraph::adj::DefaultIx;
-use petgraph::prelude::{EdgeIndex, EdgeRef, NodeIndex, StableGraph};
-use petgraph::Directed;
+use petgraph::prelude::{EdgeIndex, EdgeRef, Graph, NodeIndex};
+use petgraph::{Outgoing, Undirected};
 
 const MAX_NUM_SWAPS: usize = 4; // Num of tokens, therefore max pairs is 4
 
@@ -76,7 +77,7 @@ impl Path {
             })
             .collect::<Result<Vec<PairLookup>>>()?;
 
-        Ok(Self{
+        Ok(Self {
             token_order,
             pair_order,
         })
@@ -94,7 +95,12 @@ impl Path {
         for (input, pair_key) in zip(&self.token_order, &self.pair_order) {
             let pair = protocols
                 .get(&pair_key.factory_address)
-                .expect("Protocol not found")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Protocol with address {:?} not found",
+                        &pair_key.factory_address
+                    )
+                })
                 .pairs
                 .get(&pair_key.pair_addresses)
                 .ok_or_else(|| anyhow!("Pair not found in protocol"))?;
@@ -128,13 +134,12 @@ impl Path {
     }
 }
 
-type MyGraph<'a> = StableGraph<Address, &'a Pair, Directed, DefaultIx>;
+type MyGraph<'a> = Graph<Address, &'a Pair, Undirected, DefaultIx>;
 
 fn add_pair<'a>(
     graph: &mut MyGraph<'a>,
     pair: &'a Pair,
     nodes: &mut HashMap<Address, NodeIndex>,
-    start_token: Address,
 ) -> Result<()> {
     let (token0, token1) = pair.get_tokens();
     let node0 = match nodes.get(&token0) {
@@ -155,38 +160,26 @@ fn add_pair<'a>(
         }
     };
 
-    if token0 == start_token {
-        let start_node = *nodes
-            .get(&Address::zero())
-            .ok_or_else(|| anyhow!("Missing Target Node"))?;
-
-        graph.add_edge(start_node, node1, pair);
-    } else if token1 == start_token {
-        let start_node = *nodes
-            .get(&Address::zero())
-            .ok_or_else(|| anyhow!("Missing Target Node"))?;
-
-        graph.add_edge(start_node, node0, pair);
-    }
-
     graph.add_edge(node0, node1, pair);
-    graph.add_edge(node1, node0, pair);
 
     Ok(())
 }
 
 pub fn create_graph<'a>(
-    allpairs: Vec<&'a Pair>,
+    allpairs: Chain<
+        FlatMap<
+            Values<'a, H160, Protocol>,
+            Values<'a, (H160, H160), Pair>,
+            fn(&'a Protocol) -> Values<'a, (H160, H160), Pair>,
+        >,
+        Iter<'a, Pair>,
+    >,
     nodes: &mut HashMap<Address, NodeIndex>,
-    traded_token: Address,
 ) -> Result<MyGraph<'a>> {
-    let mut graph: MyGraph = MyGraph::new();
-
-    let start_index = graph.add_node(traded_token);
-    nodes.insert(Address::zero(), start_index);
+    let mut graph: MyGraph = MyGraph::new_undirected();
 
     for pair in allpairs {
-        add_pair(&mut graph, pair, nodes, traded_token)?;
+        add_pair(&mut graph, pair, nodes)?;
     }
     Ok(graph)
 }
@@ -200,14 +193,11 @@ pub fn find_shortest_path<'a>(
     let goal = *nodes
         .get(target)
         .ok_or_else(|| anyhow!("Missing target node"))?;
-    let start_index = nodes
-        .get(&Address::zero())
-        .ok_or_else(|| anyhow!("Missing start node"))?;
 
     let mut seen: HashMap<(NodeIndex, usize), U256> = HashMap::new();
     let mut best_path = SearchPath::new(0.into());
     let mut start_path = SearchPath::new(amount_in);
-    start_path.token_order.push(*start_index);
+    start_path.token_order.push(goal);
     search_visit(graph, goal, start_path, &mut seen, &mut best_path);
 
     Path::from_search_path(graph, best_path)
@@ -226,7 +216,7 @@ fn search_visit(
     let cur_node = cur_path.token_order[cur_path.token_order.len() - 1];
     let cur_weight = cur_path.weight;
 
-    if cur_node == target_node {
+    if cur_node == target_node && !cur_path.pair_order.is_empty() {
         if cur_weight > best.weight {
             best.token_order = cur_path.token_order;
             best.pair_order = cur_path.pair_order;
@@ -267,7 +257,7 @@ fn get_successors(
     cur_weight: U256,
 ) -> Vec<(EdgeIndex, NodeIndex, U256)> {
     let node_token = graph.node_weight(node).unwrap();
-    let edges = graph.edges(node);
+    let edges = graph.edges_directed(node, Outgoing);
 
     let mut successors = Vec::new();
 

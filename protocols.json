@@ -56,6 +56,14 @@
     "router_abi": "abis/default_router.json"
   },
   {
+    "name": "FraxswapV2",
+    "factory_addr": "0x51f9DBEd76f5Dcf209817f641b549aa82F35D23F",
+    "factory_abi": "abis/default.json",
+    "swap_fee": 30,
+    "router_address": "0xd95fe880d7717f7f20981FE6e41A2315f3EFeAb5",
+    "router_abi": "abis/default_router.json"
+  },
+  {
     "name": "Energyfi",
     "factory_addr": "0x7c7EaEa389d958BB37a3fd08706Ca884D53Dc1F3",
     "factory_abi": "abis/default.json",

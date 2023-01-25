@@ -1,6 +1,7 @@
+use std::collections::hash_map::Values;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::iter::zip;
+use std::iter::{zip, FlatMap};
 use std::sync::Arc;
 
 use anyhow::{anyhow, ensure, Result};
@@ -8,8 +9,10 @@ use deadpool_sqlite::rusqlite::{params, params_from_iter};
 use deadpool_sqlite::Pool;
 use ethers::abi::{Abi, Token};
 use ethers::prelude::*;
+use futures::future::try_join_all;
 
 use crate::pair::{Pair, PairAddress, PartialPair};
+use crate::txpool::TxPool;
 
 pub type WSClient = Arc<Provider<Ws>>;
 
@@ -186,25 +189,26 @@ impl Protocol {
             }
         };
         let addresses = pair_call.get_pair_addresses(&mut multicall).await?;
-        let pool_contracts: Vec<SwapPool<WSClient>> = addresses
+        let pool_contracts = addresses
             .into_iter()
-            .map(|address| address.generate_pool_contract(client.clone()))
-            .collect();
+            .map(|address| address.generate_pool_contract(client.clone()));
 
-        for pool in &pool_contracts {
+        let length = pool_contracts.len();
+        let mut pairs: Vec<DbAddition> = Vec::with_capacity(length);
+
+        for pool in pool_contracts.clone() {
             multicall.add_call(pool.method::<_, Address>("token0", ())?, false);
             multicall.add_call(pool.method::<_, Address>("token1", ())?, false);
         }
 
         let tokens = multicall.call_raw().await?;
         let tokens = tokens.chunks(2);
-        let mut pairs: Vec<DbAddition> = Vec::with_capacity(pool_contracts.len());
 
         ensure!(
-            tokens.len() == pool_contracts.len(),
+            tokens.len() == length,
             "Differing lengths of contracts and multicall returns"
         );
-        for iter in zip(&pool_contracts, tokens) {
+        for iter in zip(pool_contracts, tokens) {
             let pool = iter.0;
             let chunk = iter.1;
 
@@ -296,15 +300,13 @@ impl Protocol {
         Ok(protocol)
     }
 
-    async fn get_reserves(mut protocol: Self) -> Result<Self> {
-        let pairs: Vec<&mut Pair> = protocol.pairs.values_mut().collect();
-
+    async fn get_reserves(mut protocol: Self, address: Address) -> Result<(Self, Address)> {
         let mut multicall: Multicall<WSClient> =
             Multicall::new(protocol.factory.client().clone(), None)
                 .await?
                 .version(MulticallVersion::Multicall);
 
-        for pair in &pairs {
+        for pair in protocol.pairs.values_mut() {
             multicall.add_call(
                 pair.contract
                     .method::<_, (u128, u128, u32)>("getReserves", ())?,
@@ -316,10 +318,10 @@ impl Protocol {
         multicall.clear_calls();
 
         ensure!(
-            pairs.len() == tokens.len(),
+            protocol.pairs.len() == tokens.len(),
             "Differing lengths of pairs and multicall returns"
         );
-        for it in zip(pairs, tokens) {
+        for it in zip(protocol.pairs.values_mut(), tokens) {
             let pair = it.0;
             let token = it.1;
             let mut reserves = token
@@ -338,7 +340,7 @@ impl Protocol {
                 .as_u128();
         }
 
-        Ok(protocol)
+        Ok((protocol, address))
     }
 
     pub fn unsimualte_trade(&mut self, changed: Vec<Pair>) {
@@ -354,7 +356,7 @@ pub async fn generate_protocols(
     client: WSClient,
     file_path: &str,
     pool: Arc<Pool>,
-) -> Result<Vec<Protocol>> {
+) -> Result<HashMap<Address, Protocol>> {
     let raw_protocols: Vec<RawProtocol> =
         serde_json::from_str(tokio::fs::read_to_string(file_path).await?.as_str())?;
     let mut tasks = Vec::with_capacity(raw_protocols.len());
@@ -365,17 +367,25 @@ pub async fn generate_protocols(
             pool.clone(),
         )));
     }
-    let mut outcome = Vec::with_capacity(tasks.len());
-    for task in tasks {
-        outcome.push(task.await??)
+
+    let mut protocols: HashMap<Address, Protocol> = HashMap::with_capacity(tasks.len());
+    let outcomes = try_join_all(tasks)
+        .await?
+        .into_iter()
+        .collect::<Result<Vec<Protocol>>>()?;
+    for protocol in outcomes {
+        protocols.insert(protocol.factory.address(), protocol);
     }
 
-    Ok(outcome)
+    Ok(protocols)
 }
 
-pub async fn update_all_pairs(protocols: Vec<Protocol>, client: WSClient) -> Result<Vec<Protocol>> {
+pub async fn update_all_pairs(
+    mut protocols: HashMap<Address, Protocol>,
+    client: WSClient,
+) -> Result<HashMap<Address, Protocol>> {
     let mut handles = Vec::with_capacity(protocols.len());
-    for protocol in protocols {
+    for (_address, protocol) in protocols.drain() {
         handles.push(tokio::spawn(Protocol::update_pairs(
             protocol,
             client.clone(),
@@ -383,28 +393,32 @@ pub async fn update_all_pairs(protocols: Vec<Protocol>, client: WSClient) -> Res
         )));
     }
 
-    let mut updated = Vec::with_capacity(handles.len());
-    let outcome = futures::future::join_all(handles).await;
+    let outcome = futures::future::try_join_all(handles).await?;
 
     for item in outcome {
-        updated.push(item??);
+        let protocol = item?;
+        protocols.insert(protocol.factory.address(), protocol);
     }
-    Ok(updated)
+    Ok(protocols)
 }
 
-pub async fn get_all_reserves(protocols: Vec<Protocol>) -> Result<Vec<Protocol>> {
-    let mut handles = Vec::with_capacity(protocols.len());
-    for protocol in protocols {
-        handles.push(tokio::spawn(Protocol::get_reserves(protocol)));
-    }
+impl<'a> TxPool<'a> {
+    pub async fn get_all_reserves(&mut self) -> Result<()> {
+        let protocols = &mut self.protocols;
+        let mut handles = Vec::with_capacity(protocols.len());
+        for (address, protocol) in protocols.drain() {
+            handles.push(tokio::spawn(Protocol::get_reserves(protocol, address)));
+        }
 
-    let mut updated = Vec::with_capacity(handles.len());
-    let outcome = futures::future::join_all(handles).await;
+        let outcome = futures::future::try_join_all(handles).await?;
 
-    for item in outcome {
-        updated.push(item??);
+        for item in outcome {
+            let (protocol, address) = item?;
+            self.protocols.insert(address, protocol);
+        }
+
+        Ok(())
     }
-    Ok(updated)
 }
 
 fn repeat_vars(count: usize) -> String {
@@ -415,10 +429,12 @@ fn repeat_vars(count: usize) -> String {
     s
 }
 
-pub fn get_all_pairs(protocols: Vec<&Protocol>) -> Vec<&Pair> {
-    let mut allpairs = Vec::new();
-    for protocol in protocols {
-        allpairs.extend(protocol.pairs.values());
-    }
-    allpairs
+pub fn get_all_pairs<'a>(
+    protocols: Values<'a, H160, Protocol>,
+) -> FlatMap<
+    Values<'a, Address, Protocol>,
+    Values<'_, (Address, Address), Pair>,
+    fn(&'a Protocol) -> Values<'_, (Address, Address), Pair>,
+> {
+    protocols.flat_map(|item| item.pairs.values())
 }

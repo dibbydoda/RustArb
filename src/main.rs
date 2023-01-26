@@ -24,7 +24,7 @@ use lazy_static::lazy_static;
 use tokio::time::Instant;
 
 use crate::pair::{generate_custom_pairs, Pair};
-use crate::trade::{Gas, PossibleArbitrage};
+use crate::trade::{find_best_trade, Gas, PossibleArbitrage};
 use crate::v2protocol::{generate_protocols, update_all_pairs, Protocol, WSClient};
 
 mod graph;
@@ -49,6 +49,41 @@ const TOKENS_TO_TRY: [&str; 6] = ["", "", "", "", "", ""];
 abigen!(erc20, "abis/erc20.json");
 abigen!(ArbContract, "abis/BlockStartArb.json");
 
+struct PairStorage {
+    protocols: HashMap<Address, Protocol>,
+    custom_pairs: Vec<Pair>,
+}
+
+impl PairStorage {
+    async fn new(client_arc: WSClient, pool: Arc<Pool>) -> Self {
+        let (protocols, custom_pairs) =
+            reload_protocols_and_pairs(client_arc.clone(), pool.clone())
+                .await
+                .unwrap();
+
+        Self {
+            protocols,
+            custom_pairs,
+        }
+    }
+
+    async fn get_all_reserves(&mut self) -> Result<()> {
+        let protocols = &mut self.protocols;
+        let mut handles = Vec::with_capacity(protocols.len());
+        for (address, protocol) in protocols.drain() {
+            handles.push(tokio::spawn(Protocol::get_reserves(protocol, address)));
+        }
+
+        let outcome = futures::future::try_join_all(handles).await?;
+
+        for item in outcome {
+            let (protocol, address) = item?;
+            self.protocols.insert(address, protocol);
+        }
+
+        Ok(())
+    }
+}
 #[tokio::main]
 async fn main() {
     dotenv::dotenv().expect("MISSING .env FILE");
@@ -70,15 +105,18 @@ async fn main() {
     let mut block_subscription = client.subscribe_blocks().await.unwrap();
     let mut last_update_time = Instant::now();
 
-    .get_all_reserves().await.unwrap();
+    let mut pair_storage = PairStorage::new(client.clone(), pool.clone()).await;
+    pair_storage.get_all_reserves().await.unwrap();
+
     let chain_id = client.get_chainid().await.unwrap();
+
     loop {
         if last_update_time.elapsed() > Duration::from_secs(3600) {
             last_update_time = Instant::now();
-            updtate protocols etc
-            .get_all_reserves().await.unwrap();
-        } else if let Some(_block) = block_subscription.next().now_or_never() {
-            .get_all_reserves().await.unwrap();
+            pair_storage = PairStorage::new(client.clone(), pool.clone()).await;
+            pair_storage.get_all_reserves().await.unwrap();
+        } else if let Some(_block) = block_subscription.next().await {
+            pair_storage.get_all_reserves().await.unwrap();
             println!("Got new reserves");
         }
 
@@ -88,7 +126,7 @@ async fn main() {
                 execute_trade(
                     trade,
                     client.clone(),
-                    &tx_pool.protocols,
+                    &pair_storage.protocols,
                     &arbitrage_contract,
                     &other_wallets,
                     chain_id,
@@ -117,10 +155,8 @@ async fn reload_protocols_and_pairs(
 }
 
 async fn get_profitable_arbitrage<'a>(
-    tx_pool: &mut TxPool<'a>,
-    input_amount: U256,
 ) -> Option<PossibleArbitrage> {
-    let arbitrages = tx_pool.get_arbitrages(input_amount).await.unwrap();
+    let arbitrages = get_arbitrages().await.unwrap();
     let best_arbitrage = arbitrages
         .into_iter()
         .max_by_key(|arbitrage| arbitrage.profit.saturating_sub(arbitrage.gas_in_eth));
@@ -134,6 +170,14 @@ async fn get_profitable_arbitrage<'a>(
                 None
             }
         }
+    }
+}
+
+async fn get_arbitrages(pair_storage: Arc<PairStorage>) -> Vec<Arbitrage> {
+    for start in TOKENS_TO_TRY {
+        let addr = Address::from_str(start).unwrap();
+        for amt in []
+        find_best_trade(pair_storage.clone())
     }
 }
 

@@ -163,27 +163,16 @@ impl Protocol {
         Ok(())
     }
 
-    async fn update_pairs(
-        mut protocol: Self,
-        client: WSClient,
-        bad_tokens_file: &str,
-    ) -> Result<Self> {
-        {
-            let additions = protocol.get_new_pairs(client.clone()).await?;
-            if let Some(pairs) = additions {
-                protocol.insert_into_database(pairs).await?
-            };
-
-            protocol
-                .update_excluded_pairs_for_protocol(bad_tokens_file)
-                .await?;
-        };
+    async fn update_pairs(mut protocol: Self, client: WSClient) -> Result<Self> {
         protocol.load_db_pairs(client).await?;
 
         Ok(protocol)
     }
 
-    async fn get_reserves(mut protocol: Self, address: Address) -> Result<(Self, Address)> {
+    pub(crate) async fn get_reserves(
+        mut protocol: Self,
+        address: Address,
+    ) -> Result<(Self, Address)> {
         let mut multicall: Multicall<WSClient> =
             Multicall::new(protocol.factory.client().clone(), None)
                 .await?
@@ -225,14 +214,6 @@ impl Protocol {
 
         Ok((protocol, address))
     }
-
-    pub fn unsimualte_trade(&mut self, changed: Vec<Pair>) {
-        for pair in changed {
-            self.pairs
-                .insert(pair.get_tokens(), pair)
-                .expect("Modified version of pair not found in protocol");
-        }
-    }
 }
 
 pub async fn generate_protocols(
@@ -272,7 +253,6 @@ pub async fn update_all_pairs(
         handles.push(tokio::spawn(Protocol::update_pairs(
             protocol,
             client.clone(),
-            BAD_TOKENS_PATH,
         )));
     }
 
@@ -283,23 +263,6 @@ pub async fn update_all_pairs(
         protocols.insert(protocol.factory.address(), protocol);
     }
     Ok(protocols)
-}
-
-pub async fn get_all_reserves(&mut self) -> Result<()> {
-    let protocols = &mut self.protocols;
-    let mut handles = Vec::with_capacity(protocols.len());
-    for (address, protocol) in protocols.drain() {
-        handles.push(tokio::spawn(Protocol::get_reserves(protocol, address)));
-    }
-
-    let outcome = futures::future::try_join_all(handles).await?;
-
-    for item in outcome {
-        let (protocol, address) = item?;
-        self.protocols.insert(address, protocol);
-    }
-
-    Ok(())
 }
 
 fn repeat_vars(count: usize) -> String {

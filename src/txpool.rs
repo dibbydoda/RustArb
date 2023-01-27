@@ -157,7 +157,7 @@ pub struct TxPool<'a> {
     pub(crate) protocols: HashMap<Address, Protocol>,
     tx_lookup: Arc<HashMap<String, TradeType>>,
     trades: FxHashMap<Address, Trade>,
-    custom_pairs: Vec<Pair>,
+    pub(crate) custom_pairs: FxHashMap<(Address, Address), Pair>,
 }
 
 struct Watcher<'a> {
@@ -269,10 +269,11 @@ impl<'a> TxPool<'a> {
             if trade.simulated {
                 continue;
             }
-            let checked_amounts = match trade.check_trade_validity(&self.protocols) {
-                Ok(amounts) => amounts,
-                Err(_) => continue,
-            };
+            let checked_amounts =
+                match trade.check_trade_validity(&self.protocols, &self.custom_pairs) {
+                    Ok(amounts) => amounts,
+                    Err(_) => continue,
+                };
 
             let mut_protocol = self
                 .protocols

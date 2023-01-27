@@ -5,6 +5,7 @@ use std::str::FromStr;
 use anyhow::Result;
 use ethers::prelude::Address;
 use ethers::types::U256;
+use rustc_hash::FxHashMap;
 use thiserror::Error;
 
 use crate::v2protocol::{SwapPool, WSClient};
@@ -198,11 +199,20 @@ impl OrderedReserves {
     }
 }
 
-pub async fn generate_custom_pairs(pair_file: &str, client: WSClient) -> Result<Vec<Pair>> {
+pub async fn generate_custom_pairs(
+    pair_file: &str,
+    client: WSClient,
+) -> Result<FxHashMap<(Address, Address), Pair>> {
+    let mut output: FxHashMap<(Address, Address), Pair> = FxHashMap::default();
     let custom_pairs: Vec<JsonPair> =
         serde_json::from_str(tokio::fs::read_to_string(pair_file).await?.as_str())?;
-    Ok(custom_pairs
+
+    for pair in custom_pairs
         .into_iter()
         .map(|json| Pair::from_jsonpair(json, client.clone()))
-        .collect())
+    {
+        output.insert((pair.token0, pair.token1), pair);
+    }
+
+    Ok(output)
 }

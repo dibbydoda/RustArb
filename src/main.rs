@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use deadpool_sqlite::{Config, Pool, Runtime};
 use ethers::abi::Detokenize;
@@ -21,6 +21,7 @@ use futures::future::join_all;
 use futures::stream::StreamExt;
 use futures::FutureExt;
 use lazy_static::lazy_static;
+use rustc_hash::FxHashMap;
 use tokio::time::Instant;
 
 use crate::pair::{generate_custom_pairs, Pair};
@@ -122,6 +123,7 @@ async fn main() {
                     trade,
                     client.clone(),
                     &tx_pool.protocols,
+                    &tx_pool.custom_pairs,
                     &arbitrage_contract,
                     &other_wallets,
                     chain_id,
@@ -142,7 +144,10 @@ async fn main() {
 async fn reload_protocols_and_pairs(
     client: WSClient,
     pool: Arc<Pool>,
-) -> Result<(HashMap<Address, Protocol>, Vec<Pair>)> {
+) -> Result<(
+    HashMap<Address, Protocol>,
+    FxHashMap<(Address, Address), Pair>,
+)> {
     let protocols = generate_protocols(client.clone(), PROTOCOLS_PATH, pool.clone())
         .await
         .unwrap();
@@ -281,6 +286,7 @@ async fn execute_trade(
     arb: PossibleArbitrage,
     client: WSClient,
     protocols: &HashMap<Address, Protocol>,
+    custom_pairs: &FxHashMap<(Address, Address), Pair>,
     arb_contract: &ArbContract<WSClient>,
     accounts: &[LocalWallet],
     chain_id: U256,
@@ -292,12 +298,16 @@ async fn execute_trade(
         .pair_order
         .iter()
         .map(|lookup| {
-            let pair = protocols
-                .get(&lookup.factory_address)
-                .unwrap()
-                .pairs
-                .get(&lookup.pair_addresses)
-                .unwrap();
+            let pair = match protocols.get(&lookup.factory_address) {
+                None => custom_pairs
+                    .get(&lookup.pair_addresses)
+                    .ok_or_else(|| anyhow!("Pair not found in customs")),
+                Some(protocol) => protocol
+                    .pairs
+                    .get(&lookup.pair_addresses)
+                    .ok_or_else(|| anyhow!("Pair not found in protocol")),
+            }
+            .unwrap();
             (pair.contract.address(), pair.fee)
         })
         .collect();

@@ -8,6 +8,7 @@ use ethers::abi::{Detokenize, InvalidOutputType, Token, Tokenizable};
 use ethers::prelude::{Address, U256};
 use ethers::types::H256;
 use petgraph::stable_graph::NodeIndex;
+use rustc_hash::FxHashMap;
 
 use crate::graph::{create_graph, find_shortest_path, PairLookup, Path};
 use crate::pair::Pair;
@@ -152,6 +153,7 @@ impl Trade {
     pub fn check_trade_validity(
         &self,
         protocols: &HashMap<Address, Protocol>,
+        custom_pairs: &FxHashMap<(Address, Address), Pair>,
     ) -> Result<Vec<U256>> {
         let cur_unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -164,7 +166,9 @@ impl Trade {
 
         let amounts = match &self.params {
             TradeParams::ExactInput(params) => {
-                let amounts = self.path.get_amounts_out(params.amount_in, protocols)?;
+                let amounts =
+                    self.path
+                        .get_amounts_out(params.amount_in, protocols, custom_pairs)?;
                 ensure!(
                     amounts.last().expect("Amounts should never be empty") > &params.amount_out_min
                 );
@@ -252,17 +256,19 @@ impl Detokenize for SwapExact {
 pub fn find_best_trade<'a>(
     protocols: &'a mut HashMap<Address, Protocol>,
     amount: U256,
-    custom_pairs: &'a Vec<Pair>,
+    custom_pairs: &'a FxHashMap<(Address, Address), Pair>,
 ) -> (Path, U256) {
     let mut nodes: HashMap<Address, NodeIndex> = HashMap::new();
     let all_pairs = get_all_pairs(protocols.values());
     let target = Address::from_str(TRADED_TOKEN.as_str()).unwrap();
 
-    let pairs = all_pairs.chain(custom_pairs);
+    let pairs = all_pairs.chain(custom_pairs.values());
 
     let graph = create_graph(pairs, &mut nodes).unwrap();
     let shortest = find_shortest_path(&graph, nodes, &target, amount).unwrap();
-    let outputs = shortest.get_amounts_out(amount, protocols).unwrap();
+    let outputs = shortest
+        .get_amounts_out(amount, protocols, custom_pairs)
+        .unwrap();
 
     (shortest, outputs.last().unwrap().to_owned())
 }

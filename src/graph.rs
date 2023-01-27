@@ -1,14 +1,14 @@
 use std::collections::hash_map::{Entry, Values};
 use std::collections::HashMap;
 use std::iter::{zip, Chain, FlatMap};
-use std::slice::Iter;
 
 use anyhow::{anyhow, Result};
-use ethers::prelude::{Address, H160};
+use ethers::prelude::Address;
 use ethers::types::U256;
 use petgraph::adj::DefaultIx;
 use petgraph::prelude::{EdgeIndex, EdgeRef, Graph, NodeIndex};
 use petgraph::{Outgoing, Undirected};
+use rustc_hash::FxHashMap;
 
 use crate::pair::Pair;
 use crate::v2protocol::Protocol;
@@ -88,23 +88,22 @@ impl Path {
         &self,
         input: U256,
         protocols: &HashMap<Address, Protocol>,
+        custom_pairs: &FxHashMap<(Address, Address), Pair>,
     ) -> Result<Vec<U256>> {
         let mut amounts = Vec::with_capacity(self.token_order.len());
         let mut current_amount = input;
         amounts.push(current_amount);
 
         for (input, pair_key) in zip(&self.token_order, &self.pair_order) {
-            let pair = protocols
-                .get(&pair_key.factory_address)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "Protocol with address {:?} not found",
-                        &pair_key.factory_address
-                    )
-                })
-                .pairs
-                .get(&pair_key.pair_addresses)
-                .ok_or_else(|| anyhow!("Pair not found in protocol"))?;
+            let pair = match protocols.get(&pair_key.factory_address) {
+                None => custom_pairs
+                    .get(&pair_key.pair_addresses)
+                    .ok_or_else(|| anyhow!("Pair not found in customs")),
+                Some(protocol) => protocol
+                    .pairs
+                    .get(&pair_key.pair_addresses)
+                    .ok_or_else(|| anyhow!("Pair not found in protocol")),
+            }?;
             current_amount = pair.get_amount_out(*input, current_amount)?;
             amounts.push(current_amount);
         }
@@ -169,11 +168,11 @@ fn add_pair<'a>(
 pub fn create_graph<'a>(
     allpairs: Chain<
         FlatMap<
-            Values<'a, H160, Protocol>,
-            Values<'a, (H160, H160), Pair>,
-            fn(&'a Protocol) -> Values<'a, (H160, H160), Pair>,
+            Values<'a, ethers::types::H160, Protocol>,
+            Values<'a, (ethers::types::H160, ethers::types::H160), Pair>,
+            fn(&'a Protocol) -> Values<'a, (ethers::types::H160, ethers::types::H160), Pair>,
         >,
-        Iter<'a, Pair>,
+        Values<'a, (ethers::types::H160, ethers::types::H160), Pair>,
     >,
     nodes: &mut HashMap<Address, NodeIndex>,
 ) -> Result<MyGraph<'a>> {
